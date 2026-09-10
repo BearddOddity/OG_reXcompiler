@@ -47,3 +47,28 @@ void sub_001EC720(RecompCtx* c) {
     c->esp += 4u + 8u;
     REX_LEAVE();
 }
+
+/* sub_001E9D10 — append a u32 to a growable array. thiscall: ecx=this,
+ * [esp+4]=value; ret 4. Layout: [this]=data, [this+4]=count, [this+8]=capacity.
+ * Bypasses the pool-vtable realloc dance the recompilation gets wrong. */
+void sub_001E9D10(RecompCtx* c) {
+    REX_ENTER(0x001E9D10u);
+    uint32_t self  = c->ecx;
+    uint32_t value = MEM32(c->esp + 4u);
+    uint32_t count = MEM32(self + 4u);
+    uint32_t cap   = MEM32(self + 8u);
+    uint32_t data  = MEM32(self);
+    if (!data || count >= cap) {
+        uint32_t ncap = cap ? cap * 2u : 0x40u;
+        uint32_t nd   = rex_pool_alloc(ncap * 4u);
+        if (data && count) memcpy(XBOX_PTR(nd), XBOX_PTR(data), count * 4u);
+        MEM32(self)      = nd;
+        MEM32(self + 8u) = ncap;
+        data = nd;
+    }
+    MEM32(data + count * 4u) = value;
+    MEM32(self + 4u) = count + 1u;
+    c->eax = self;
+    c->esp += 4u + 4u;
+    REX_LEAVE();
+}

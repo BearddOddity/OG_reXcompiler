@@ -28,13 +28,17 @@ volatile uint32_t      g_rex_bt[REX_GLOBAL_BT];
 volatile int           g_rex_bt_depth;
 
 static void mirror_bt(void) {
-    int d = t_top < REX_GLOBAL_BT ? t_top : REX_GLOBAL_BT;
-    for (int i = 0; i < d; i++) g_rex_bt[i] = t_stack[t_top - d + i];
-    g_rex_bt_depth = t_top;
+    /* t_top is the true recursion depth; the ring only holds the shallowest
+     * REX_TRACE_DEPTH entries, so never index past what was actually stored. */
+    int stored = t_top < REX_TRACE_DEPTH ? t_top : REX_TRACE_DEPTH;
+    int d = stored < REX_GLOBAL_BT ? stored : REX_GLOBAL_BT;
+    if (d < 0) d = 0;
+    for (int i = 0; i < d; i++) g_rex_bt[i] = t_stack[stored - d + i];
+    g_rex_bt_depth = d;
 }
 
 void rex_enter(uint32_t guest_addr) {
-    if (t_top < REX_TRACE_DEPTH) t_stack[t_top] = guest_addr;
+    if (t_top >= 0 && t_top < REX_TRACE_DEPTH) t_stack[t_top] = guest_addr;
     t_top++;
     g_rex_last_enter = guest_addr;
     g_rex_enter_count++;
@@ -42,7 +46,12 @@ void rex_enter(uint32_t guest_addr) {
 }
 
 void rex_leave(void) {
-    if (t_top > 0) t_top--;
+    if (t_top > 0) {
+        t_top--;
+        /* clear the slot we're leaving so a later shallower frame can't read a
+         * stale deeper address here */
+        if (t_top >= 0 && t_top < REX_TRACE_DEPTH) t_stack[t_top] = 0;
+    }
     mirror_bt();
 }
 
