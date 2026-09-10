@@ -251,3 +251,41 @@ Downstream, the real fix for thunk-forwarders (`sub_X: jmp [import]` called
 with caller-varying arg counts, i.e. `__cdecl`): the glue must not pop args for
 those — the caller's own `add esp, N` does. The emitter can mark a
 `jmp [import]`-only function so the dispatch pops just the return slot.
+
+---
+
+## Phase A — deep into engine init (2026-09-10, commit fca30b6)
+
+The recompiled X-Men Legends thread now runs **~2,600 functions deep** into C++
+static initialization (from ~65 at the start of the session).
+
+**What got it there:**
+
+| fix | effect |
+|---|---|
+| `_SEH_prolog4`/TIB + fake xboxkrnl page | CRT per-thread init runs |
+| vendored kernel + `ogxbox_bridge.c` (~140 ordinals) | real `Nt*`/`Ke*`/`Rtl*`/`Ex*` behaviour |
+| ordinal 24 fix (`ExQueryNonVolatileSetting`, not `ExQueryPoolBlockSize`) | stopped a 16-byte frame-corruption |
+| `fnptrscan` — data function-pointer scan (`src/scanners.c`) | recovers the ~3,000 `_initterm` ctor-table / callback pointers the recursive scanner never reaches; C++ ctors actually run |
+| `RDTSC` / `CPUID` in the emitter | CRT feature/timing probes |
+| file-I/O + virtual-memory ordinals routed to the permissive SDK stubs | the bridge's handlers rejected some flags and returned NULL |
+
+**fnptrscan** runs at the top of `phase_discover`: every 4-byte-aligned u32 in
+a data section that points at a plausible prologue *inside a code section* and
+has a neighbouring slot also pointing to code. `DISCOVERED` authority so extent
+detection / merge / gapfill still win.
+
+**Current wall:** a gap in the C++ static-init chain. `sub_00239E50` (a ctor)
+`operator new`s an object, `sub_00236500` initialises it, then `sub_00216210`
+does `repe cmpsb` against `[0x005BC51C]` — a global that should hold a config
+string pointer but holds garbage (`~0x4A7550xx`), because the ctor that sets it
+either didn't run or decoded wrong. This is the iterative ctor-bring-up grind
+the X-Men recomp has been running by hand; each recovered global unblocks the
+next. `-DREX_TRACE` + `g_rex_bt[]` give the failing ctor chain.
+
+### Still ahead
+
+- ctor-gap grind → the engine's 696-class registry builds
+- **VFS** (Phase B): mount the XISO as `D:`, real `Nt*File`
+- **D3D8 HLE** (Phase C): `IDirect3DDevice8` → host — first frame
+- input, audio
