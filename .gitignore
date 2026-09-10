@@ -5,3 +5,9 @@ out/
 *.exe
 *.pdb
 *.ilk
+/third_party/fmt/
+/third_party/inja/
+/third_party/json/
+/third_party/spdlog/
+/third_party/tomlplusplus/
+/third_party/xxHash/
