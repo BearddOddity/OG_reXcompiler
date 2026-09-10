@@ -73,3 +73,57 @@ void __imp__NtClose(RecompCtx* c) {
 Each step is gated on "X-Men gets measurably further" (more functions reached,
 a new subsystem initialised, a frame rendered) — the same loop the X-Men recomp
 has been running by hand.
+
+---
+
+## Phase A — execution (2026-09-10, `main`)
+
+Locked decisions after reading the X-Men Legends recomp kernel
+(`D:\My Games\Xbox Recomp\src\kernel`, same author, ~9,300 lines):
+
+**Memory model: base + offset, kept.** The X-Men kernel already assumes
+`native = guest_va + g_xbox_mem_offset` — the same shape as this SDK's
+`g_guest_ram + addr`. So `g_xbox_mem_offset == (uintptr_t)g_guest_ram` and the
+vendored kernel links against our memory with no marshalling. Identity mapping
+(`VirtualAlloc` at the XBE base) was tested and works, but is not needed and
+would lose the null-page trap for free.
+
+**`xbox_memory_layout.c` owns guest RAM.** It is a complete subsystem — guest
+allocation, the `XBOX_HEAP_BASE` bump heap, `g_xbox_mem_offset`, the page-zero
+trap, `RECOMP_TLS`. It replaces `ogxbox_runtime.c`'s ad-hoc `g_guest_ram`
+malloc; our `g_guest_ram` / `MEM*` macros are re-pointed at its allocation.
+
+**Bridge: adapt X-Men's `kernel_bridge.c`, do not regenerate.** 2,068 lines,
+147 per-ordinal handlers carrying months of bring-up fixes (SEH pointer
+validation via `BRIDGE_PTR_OK`, a handle table for 64-bit `HANDLE`s in 32-bit
+guest slots, the `PsCreateSystemThreadEx` main-thread special case). Adaptation
+is mechanical:
+
+| X-Men | this SDK |
+|---|---|
+| `g_esp`, `g_eax`, `g_ecx`, ... (TLS globals) | `c->esp`, `c->eax`, ... (`RecompCtx*` param) |
+| `static void bridge_X(void)` | `void __imp__X(RecompCtx* c)` |
+| `STACK_ARG(n)` = `BRIDGE_MEM32(g_esp + n*4)` (after the dispatcher pops the return addr) | `MEM32(c->esp + n*4)` — our emitter pushes **no** return addr, so arg0 is already at `c->esp+0` |
+| dispatcher pops `argc*4` after the call | each `__imp__X` does `c->esp += argc*4` itself (`__stdcall`); `__cdecl`/varargs leave it to the caller |
+| `recomp_lookup(va)` for function-pointer args | `rex_dispatch` / the dispatch table |
+| `BRIDGE_MEM32` etc. | `MEM32` etc. (identical math) |
+
+Emitter change is minimal: emit `extern void __imp__X(RecompCtx*);` for adapted
+imports; the weak `__imp__` stub in `recomp_imports.c` stays as the fallback for
+any import not yet adapted.
+
+**Vendored** into `runtime/kernel/` + `runtime/platform/` (all the user's own
+code from the X-Men recomp):
+`kernel_{ob,thread,sync,rtl,file,io,memory,pool,hal,path,crypto,xbox}.c`,
+`kernel_thunks.c`, `kernel_bridge.c` (to be adapted),
+`xbox_memory_layout.{c,h}`, `xbox_page_zero_trap.{c,h}`, `xbox_watch.{c,h}`,
+`kernel.h`, `platform/{xbox_winnt.h,win32_compat.{c,h}}`.
+
+### Step status
+
+- [x] vendor kernel + platform sources
+- [ ] `runtime/kernel/` compiles as a static lib (fix include paths, drop the
+      POSIX `#else` branches' headers where clang-cl chokes)
+- [ ] `xbox_memory_layout.c` wired as the RAM owner; `MEM*` re-pointed
+- [ ] `kernel_bridge.c` → `recomp_kbridge.c`, `__imp__*` exported
+- [ ] generated recomp builds against it and runs past the NULL-StartRoutine wall

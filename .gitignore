@@ -1,6 +1,10 @@
-bin/
-obj/
+build/
+out/
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
 .vs/
 *.user
-artifacts/
-[Tt]est[Rr]esults/
+third_party/

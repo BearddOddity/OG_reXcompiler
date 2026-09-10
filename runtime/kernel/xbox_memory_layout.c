@@ -1,0 +1,924 @@
+/**
+ * Xbox Memory Layout Implementation
+ *
+ * Maps the XBE data sections to their expected virtual addresses on Windows.
+ * This is critical for the recompiled code which references globals by
+ * absolute address (e.g., mov eax, [0x004D532C]).
+ *
+ * Implementation:
+ * 1. VirtualAlloc a contiguous region at XBOX_BASE_ADDRESS
+ * 2. Copy .rdata and initialized .data from the XBE
+ * 3. Zero-fill the BSS region
+ * 4. Set memory protection (read-only for .rdata)
+ */
+
+#include <stdlib.h>   /* getenv, strtoul - XBOX_RAM_MB */
+#include "xbox_memory_layout.h"
+#include "xbox_page_zero_trap.h"
+#include "xbox_watch.h"
+#include "kernel.h"
+#include <stdio.h>
+#include <string.h>
+
+/* XBE header field offsets (per xboxdevwiki.net/Xbe) */
+#define XBE_MAGIC_OFFSET        0x0000
+#define XBE_BASE_ADDR_OFFSET    0x0104
+#define XBE_HEADER_SIZE_OFFSET  0x0108
+#define XBE_SECTION_COUNT_OFFSET 0x011C
+#define XBE_SECTION_HEADERS_OFFSET 0x0120
+
+/* XBE section header layout (56 bytes each) */
+#define SECTHDR_FLAGS       0x00
+#define SECTHDR_VA          0x04
+#define SECTHDR_VSIZE       0x08
+#define SECTHDR_RAW_OFFSET  0x0C
+#define SECTHDR_RAW_SIZE    0x10
+#define SECTHDR_NAME_ADDR   0x14
+#define SECTHDR_SIZE        56
+
+static void *g_memory_base = NULL;
+static size_t g_memory_size = 0;
+static ptrdiff_t g_memory_offset = 0;  /* actual_base - XBOX_BASE_ADDRESS */
+
+/* File mapping handle for the Xbox memory region.
+ * Using CreateFileMapping + MapViewOfFileEx allows mirror views to alias
+ * the same physical pages as the base region, so writes to mirror addresses
+ * (which wrap modulo 64 MB on real Xbox hardware) correctly modify the
+ * underlying data. */
+static HANDLE g_mapping_handle = NULL;
+
+/* Mirror view pointers for cleanup */
+static void *g_mirror_views[XBOX_NUM_MIRRORS] = {0};
+
+/*
+ * Emulated Xbox RAM size. Retail default; XBOX_RAM_MB=128 selects the devkit
+ * configuration. See the header for why only 64 and 128 are accepted.
+ *
+ * Everything downstream follows this: g_memory_size is set from it, the mirror
+ * views stride by g_memory_size, and MmQueryStatistics reports it. Raising it
+ * therefore moves the aliasing boundary the XDK's own memory probe reads, which
+ * is the mechanism that actually tells the game how much RAM it has.
+ */
+uint32_t g_xbox_total_ram = XBOX_TOTAL_RAM_DEFAULT;
+
+/*
+ * Payload arena. 0 = disabled, which is the default: with it off nothing about
+ * the memory map changes. See the header for why it sits at 192..256 MB.
+ */
+uint32_t g_xbox_payload_size = 0;
+static HANDLE g_payload_mapping = NULL;
+static void  *g_payload_view = NULL;
+static uint32_t g_payload_next = XBOX_PAYLOAD_BASE;
+
+static void xbox_ConfigurePayload(void)
+{
+    const char *spec = getenv("XBOX_PAYLOAD_MB");
+    unsigned long mb;
+    char *end = NULL;
+
+    if (!spec || !*spec)
+        return;
+
+    mb = strtoul(spec, &end, 10);
+    if (!end || *end != '\0' || mb == 0 || mb > XBOX_PAYLOAD_MAX_MB) {
+        fprintf(stderr,
+            "[MEM] XBOX_PAYLOAD_MB=\"%s\" ignored - expected 1..%u. The arena "
+            "sits at 0x%08X and must end by 0x%08X, because the XDK stores "
+            "resource pointers as 28-bit physical addresses and anything above "
+            "that truncates silently.\n",
+            spec, XBOX_PAYLOAD_MAX_MB, XBOX_PAYLOAD_BASE, XBOX_PAYLOAD_LIMIT);
+        fflush(stderr);
+        return;
+    }
+    g_xbox_payload_size = (uint32_t)(mb * 1024u * 1024u);
+}
+
+uint32_t xbox_PayloadAlloc(uint32_t size, uint32_t align)
+{
+    uint32_t base;
+
+    if (!g_payload_view || g_xbox_payload_size == 0 || size == 0)
+        return 0;
+    if (align < 4) align = 4;
+
+    base = (g_payload_next + (align - 1)) & ~(align - 1);
+    if (base < XBOX_PAYLOAD_BASE ||
+        base + size > XBOX_PAYLOAD_BASE + g_xbox_payload_size ||
+        base + size < base) {                       /* overflow */
+        fprintf(stderr,
+            "[MEM] payload arena exhausted: wanted %u bytes, %u of %u used\n",
+            size, g_payload_next - XBOX_PAYLOAD_BASE, g_xbox_payload_size);
+        fflush(stderr);
+        return 0;
+    }
+    g_payload_next = base + size;
+    return base;
+}
+
+static void xbox_ConfigureRam(void)
+{
+    const char *spec = getenv("XBOX_RAM_MB");
+    unsigned long mb;
+    char *end = NULL;
+
+    if (!spec || !*spec)
+        return;                      /* unset: stay at the retail default */
+
+    mb = strtoul(spec, &end, 10);
+    if (end && *end == '\0' && (mb == 64 || mb == 128)) {
+        g_xbox_total_ram = (uint32_t)(mb * 1024u * 1024u);
+        fprintf(stderr,
+            "[MEM] XBOX_RAM_MB=%lu - emulating %lu MB%s\n", mb, mb,
+            mb == 128 ? " (development kit configuration)" : " (retail)");
+    } else {
+        fprintf(stderr,
+            "[MEM] XBOX_RAM_MB=\"%s\" ignored - only 64 or 128 are accepted. "
+            "The address mask in kernel_rtl.c needs a power of two, and the "
+            "XDK's 28-bit physical resource pointers (ptr & 0x0FFFFFFF) start "
+            "truncating at 256 MB. Staying at %u MB.\n",
+            spec, (unsigned)(g_xbox_total_ram / (1024u * 1024u)));
+    }
+    fflush(stderr);
+}
+
+/* Separate allocation for Xbox kernel address space (0x80010000+).
+ * Some RenderWare code reads the kernel PE header to detect features. */
+static void *g_kernel_memory = NULL;
+
+/* Global offset accessible by recompiled code (via recomp_types.h) */
+ptrdiff_t g_xbox_mem_offset = 0;
+
+/* Global registers for recompiled code (via recomp_types.h) */
+RECOMP_TLS uint32_t g_eax = 0, g_ecx = 0, g_edx = 0, g_esp = 0;
+RECOMP_TLS uint32_t g_ebx = 0, g_esi = 0, g_edi = 0;
+
+/* SEH frame pointer bridge (see recomp_types.h for explanation) */
+RECOMP_TLS uint32_t g_seh_ebp = 0;
+
+/* fs: base for this thread. 0 = the shared fake TIB at VA 0, i.e. exactly
+ * the previous behaviour, until per-thread TIBs exist. */
+RECOMP_TLS uint32_t g_fs_base = 0;
+
+/* x87 stack. Global on purpose - see recomp_types.h. TOP starts at 0
+ * like a freshly finit'ed FPU. */
+RECOMP_TLS double   g_fp_stack[8] = {0};
+RECOMP_TLS int      g_fp_top = 0;
+RECOMP_TLS uint16_t g_fp_cw = 0x037F;   /* value after finit */
+
+/* ICALL trace ring buffer */
+volatile uint32_t g_icall_trace[16] = {0};
+volatile uint32_t g_icall_trace_idx = 0;
+volatile uint64_t g_icall_count = 0;
+
+/* Allocator return ring buffer.
+ *
+ * Ledger #16 measured the engine allocator returning the SAME address for
+ * several distinct allocations, which is the root cause of the registry
+ * holding other objects' data. But #18 marked that measurement untrusted:
+ * it was taken with instrumentation that #17 then PROVED perturbs the boot -
+ * recomp_alloc_log/recomp_alloc_fixup calls at the allocator's return killed
+ * the boot in 2 of 3 runs, causation established by removal.
+ *
+ * So the duplicate returns have to be re-measured WITHOUT calling out to C
+ * from the allocator. This ring is how: two plain memory writes at the return
+ * site, no call, no stdio, no lock. That is the same thing RECOMP_ICALL
+ * already does (recomp_types.h) roughly 12 million times per boot from the
+ * hottest path in the program without disturbing anything - which is the
+ * evidence that the technique itself is safe, as opposed to the C call that
+ * was not.
+ *
+ * Read at the crash handler and the watchdog, long after allocation is done.
+ *
+ * Sized 1024, NOT the 64 this started at. The first version assumed the boot
+ * performed "single-digit allocations", taking ledger #16's count of 7 at
+ * face value. Measured on an undisturbed boot it is 697 - so the 64-entry
+ * ring wrapped, threw away every early allocation, and showed only the
+ * failing tail. #18 warned that #16's numbers were recorded on a perturbed
+ * system; this is how badly.
+ *
+ * Literal 1024 here, matching how g_icall_trace spells its own size in this
+ * file; recomp_types.h carries the ALLOC_TRACE_SIZE define and the two must
+ * stay in step. */
+volatile uint32_t g_alloc_trace[1024] = {0};
+volatile uint32_t g_alloc_trace_idx = 0;
+
+BOOL xbox_MemoryLayoutInit(const void *xbe_data, size_t xbe_size)
+{
+    DWORD old_protect;
+    const uint8_t *xbe = (const uint8_t *)xbe_data;
+
+    if (g_memory_base) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: already initialized\n");
+        return FALSE;
+    }
+
+    /*
+     * Calculate the full range we need to map.
+     * From XBOX_MAP_START (0x0) to the end of the furthest section.
+     * This includes low memory (KPCR at 0x0-0xFF) which game code reads
+     * from, the XBE sections, and the simulated stack.
+     */
+    /* Map the full 64MB Xbox address space (covers all sections + stack + heap) */
+    xbox_ConfigureRam();          /* honour XBOX_RAM_MB before anything sizes off it */
+    xbox_ConfigurePayload();      /* and XBOX_PAYLOAD_MB, before the mirrors are placed */
+    g_memory_size = XBOX_TOTAL_RAM;
+
+    /*
+     * Create a file mapping backed by the page file.
+     *
+     * Using file mapping instead of VirtualAlloc allows us to map the same
+     * physical pages at multiple virtual addresses via MapViewOfFileEx.
+     * This is critical for the Xbox RAM mirror: the Xbox memory controller
+     * uses a 26-bit address bus, so ALL addresses wrap modulo 64 MB.
+     * Code that writes to address 0x20000448 is really writing to 0x00000448.
+     * With file mapping views, we create aliased mappings at 64 MB intervals
+     * that all point to the same physical memory.
+     */
+    g_mapping_handle = CreateFileMappingA(
+        INVALID_HANDLE_VALUE,   /* page file backed */
+        NULL,                   /* default security */
+        PAGE_READWRITE,         /* read-write access */
+        0,                      /* high DWORD of size */
+        (DWORD)g_memory_size,   /* low DWORD of size (64 MB) */
+        NULL                    /* unnamed mapping */
+    );
+    if (!g_mapping_handle) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: CreateFileMapping failed (error %lu)\n",
+                GetLastError());
+        return FALSE;
+    }
+
+    /*
+     * Map the base view at the desired virtual address.
+     * Try the original Xbox base address first. If that fails (common on
+     * Windows 11 where low addresses are often reserved), try page-aligned
+     * addresses upward until we find a free region.
+     */
+    {
+        static const uintptr_t try_bases[] = {
+            XBOX_BASE_ADDRESS,      /* 0x00010000 - original Xbox address */
+            0x00800000,             /* 8 MB - above typical PEB/TEB region */
+            0x01000000,             /* 16 MB */
+            0x02000000,             /* 32 MB */
+            0x10000000,             /* 256 MB */
+            0,                      /* sentinel - let OS choose */
+        };
+
+        for (int i = 0; try_bases[i] != 0 || i == 0; i++) {
+            LPVOID hint = try_bases[i] ? (LPVOID)try_bases[i] : NULL;
+            g_memory_base = MapViewOfFileEx(
+                g_mapping_handle,
+                FILE_MAP_ALL_ACCESS,
+                0, 0,           /* offset into mapping */
+                g_memory_size,  /* size */
+                hint            /* desired base address */
+            );
+            if (g_memory_base) {
+                if (try_bases[i] != 0 && (uintptr_t)g_memory_base != try_bases[i]) {
+                    /* OS gave us a different address, retry */
+                    UnmapViewOfFile(g_memory_base);
+                    g_memory_base = NULL;
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    if (!g_memory_base) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: failed to map base view (%zu KB)\n",
+                g_memory_size / 1024);
+        CloseHandle(g_mapping_handle);
+        g_mapping_handle = NULL;
+        return FALSE;
+    }
+
+    g_memory_offset = (uintptr_t)g_memory_base - XBOX_MAP_START;
+
+    if (g_memory_offset == 0) {
+        fprintf(stderr, "xbox_MemoryLayoutInit: mapped %zu KB at 0x%08X (original Xbox address)\n",
+                g_memory_size / 1024, XBOX_MAP_START);
+    } else {
+        fprintf(stderr, "xbox_MemoryLayoutInit: mapped %zu KB at 0x%p (offset %+td from Xbox base)\n",
+                g_memory_size / 1024, g_memory_base, g_memory_offset);
+    }
+
+    /*
+     * Helper macro: convert Xbox VA to actual mapped address.
+     * When g_memory_offset == 0 (ideal case), this is identity.
+     */
+    #define XBOX_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
+
+    /*
+     * Copy XBE header to base address.
+     * The Xbox kernel maps the XBE image header at 0x00010000.
+     * Game code reads kernel thunk table, certificate data, and
+     * section info from this region.
+     */
+    {
+        /* XBE header size is at file offset 0x0108 (SizeOfImageHeader) */
+        DWORD header_size = 0;
+        if (xbe_size >= 0x10C) {
+            header_size = *(const DWORD *)(xbe + 0x0108);
+        }
+        if (header_size == 0 || header_size > 0x10000)
+            header_size = 0x1000;  /* fallback: 4KB */
+        if (header_size > xbe_size)
+            header_size = (DWORD)xbe_size;
+        memcpy(XBOX_VA(XBOX_BASE_ADDRESS), xbe, header_size);
+        fprintf(stderr, "  XBE header: %u bytes at %p (Xbox VA 0x%08X)\n",
+                header_size, XBOX_VA(XBOX_BASE_ADDRESS), XBOX_BASE_ADDRESS);
+    }
+
+    /*
+     * Dynamically load ALL XBE sections by parsing the section headers.
+     *
+     * This replaces the old approach of hardcoding section addresses for
+     * a specific game (Burnout 3). By reading the section table from the
+     * XBE header, any game's sections are loaded automatically.
+     *
+     * Every section is copied to its original Xbox VA:
+     * - .text: needed because memory walkers may scan code pages
+     * - .rdata: constants, vtables, kernel thunk table
+     * - .data: global variables (initialized portion from XBE, BSS zeroed)
+     * - XDK library sections (D3D, DSOUND, WMADEC, XPP, etc.)
+     * - DOLBY, BINK, XTIMAGE, etc.
+     */
+    {
+        DWORD base_addr = *(const DWORD *)(xbe + XBE_BASE_ADDR_OFFSET);
+        DWORD num_sections = *(const DWORD *)(xbe + XBE_SECTION_COUNT_OFFSET);
+        DWORD sect_headers_va = *(const DWORD *)(xbe + XBE_SECTION_HEADERS_OFFSET);
+        DWORD sect_headers_off = sect_headers_va - base_addr;
+        int sections_loaded = 0;
+        size_t total_bytes = 0;
+
+        if (num_sections > 64) num_sections = 64;  /* sanity cap */
+
+        fprintf(stderr, "  XBE sections: %u (headers at file offset 0x%08X)\n",
+                num_sections, sect_headers_off);
+
+        for (DWORD si = 0; si < num_sections; si++) {
+            if (sect_headers_off + (si + 1) * SECTHDR_SIZE > xbe_size) break;
+
+            const uint8_t *sh = xbe + sect_headers_off + si * SECTHDR_SIZE;
+            DWORD sec_va       = *(const DWORD *)(sh + SECTHDR_VA);
+            DWORD sec_vsize    = *(const DWORD *)(sh + SECTHDR_VSIZE);
+            DWORD sec_raw_off  = *(const DWORD *)(sh + SECTHDR_RAW_OFFSET);
+            DWORD sec_raw_size = *(const DWORD *)(sh + SECTHDR_RAW_SIZE);
+            DWORD sec_name_va  = *(const DWORD *)(sh + SECTHDR_NAME_ADDR);
+
+            /* Read section name from XBE header */
+            const char *sec_name = "?";
+            DWORD name_off = sec_name_va - base_addr;
+            if (name_off < xbe_size && name_off + 8 <= xbe_size)
+                sec_name = (const char *)(xbe + name_off);
+
+            /* Validate: section must fit within our 64MB mapped region */
+            if (sec_va < XBOX_BASE_ADDRESS || sec_va + sec_vsize > XBOX_TOTAL_RAM)
+                continue;
+
+            /* Determine copy size (raw_size may exceed vsize due to alignment) */
+            DWORD copy_size = (sec_raw_size < sec_vsize) ? sec_raw_size : sec_vsize;
+
+            /* Zero the full virtual size first (handles BSS) */
+            memset(XBOX_VA(sec_va), 0, sec_vsize);
+
+            /* Copy initialized data from XBE */
+            if (copy_size > 0 && sec_raw_off + copy_size <= xbe_size) {
+                memcpy(XBOX_VA(sec_va), xbe + sec_raw_off, copy_size);
+            }
+
+            sections_loaded++;
+            total_bytes += copy_size;
+
+            fprintf(stderr, "  [%2u] %-12s VA=0x%08X vsize=%-8u raw=0x%08X rsize=%-8u%s\n",
+                    si, sec_name, sec_va, sec_vsize, sec_raw_off, sec_raw_size,
+                    (sec_raw_size < sec_vsize) ? " (BSS)" : "");
+        }
+
+        fprintf(stderr, "  Loaded %d/%u sections (%zu bytes total)\n",
+                sections_loaded, num_sections, total_bytes);
+    }
+
+    /*
+     * Parse the kernel thunk table address from the XBE header.
+     * The XBE stores KernelImageThunkAddress at offset 0x0158, XOR-encrypted.
+     * The key differs between retail and debug XBEs, and there is no flag
+     * saying which was used -- decode with both and keep whichever lands in
+     * the mapped address range (this is what tools/xbe_parser does).
+     *
+     * Debug XBEs are not an edge case here: they are the builds most worth
+     * recompiling, since they still carry assert strings and symbols. Halo's
+     * cachebeta.xbe is one, and assuming the retail key decoded its thunk
+     * table to 0xB4F98174 instead of 0x00253090, which silently fell back to
+     * the compile-time default and resolved 0 of 378 kernel imports.
+     */
+    if (xbe_size >= 0x015C) {
+        uint32_t thunk_raw = *(const uint32_t *)(xbe + 0x0158);
+        uint32_t thunk_retail = thunk_raw ^ 0x5B6D40B6;  /* retail XOR key */
+        uint32_t thunk_debug  = thunk_raw ^ 0xEFB1F152;  /* debug XOR key  */
+        uint32_t thunk_va;
+
+        if (thunk_retail >= XBOX_BASE_ADDRESS && thunk_retail < XBOX_TOTAL_RAM) {
+            thunk_va = thunk_retail;
+        } else {
+            thunk_va = thunk_debug;
+        }
+
+        /* Validate: thunk VA should be within our mapped region */
+        if (thunk_va >= XBOX_BASE_ADDRESS && thunk_va < XBOX_TOTAL_RAM) {
+            /* Count thunk entries by scanning until we hit 0 */
+            uint32_t thunk_count = 0;
+            /* XBOX_KERNEL_THUNK_TABLE_SIZE, not 366: the kernel exports 378
+             * slots, and kernel.h notes 366 is short by 12. A title importing
+             * a high ordinal would have had its table truncated here. */
+            for (uint32_t t = 0; t < XBOX_KERNEL_THUNK_TABLE_SIZE; t++) {
+                uint32_t entry = *(volatile uint32_t *)((uintptr_t)(thunk_va + t * 4) + g_memory_offset);
+                if (entry == 0) break;
+                thunk_count++;
+            }
+            xbox_kernel_set_thunk_address(thunk_va, thunk_count);
+            fprintf(stderr, "  Kernel thunks: %u entries at Xbox VA 0x%08X\n",
+                    thunk_count, thunk_va);
+        } else {
+            fprintf(stderr, "  WARNING: kernel thunk VA 0x%08X out of range (raw=0x%08X)\n",
+                    thunk_va, thunk_raw);
+        }
+    }
+
+    /*
+     * NOTE: .rdata is NOT set read-only.
+     * VirtualProtect rounds to page boundaries, and the .rdata end (0x003B2454)
+     * and .data start (0x003B2360) share the same 4KB page (0x003B2000-0x003B2FFF).
+     * Making .rdata read-only also makes the first ~0xCA0 bytes of .data read-only,
+     * which causes game initialization code to fault when writing to .data globals
+     * in that overlap range.
+     */
+    (void)old_protect;
+
+    #undef XBOX_VA
+
+    /* Set the global offset for recompiled code MEM macros */
+    g_xbox_mem_offset = g_memory_offset;
+
+    /*
+     * Initialize the Xbox stack for recompiled code.
+     * The stack area lives at XBOX_STACK_BASE in Xbox address space.
+     * g_esp is the global stack pointer shared by all translated functions.
+     */
+    g_esp = XBOX_STACK_TOP;
+    fprintf(stderr, "  Stack: %u KB at Xbox VA 0x%08X (ESP = 0x%08X)\n",
+            XBOX_STACK_SIZE / 1024, XBOX_STACK_BASE, g_esp);
+
+    /*
+     * Populate the fake Thread Information Block (TIB) at Xbox VA 0x0.
+     *
+     * The original Xbox code uses fs:[offset] to read per-thread data,
+     * but the recompiler drops the fs: segment prefix and generates
+     * MEM32(offset) instead. Since we mapped low memory (0x0-0xFFFF),
+     * we populate the TIB fields that game code accesses:
+     *
+     *   fs:[0x00] = SEH exception list (-1 = end of chain)
+     *   fs:[0x04] = stack base (top of stack)
+     *   fs:[0x08] = stack limit (bottom of stack)
+     *   fs:[0x18] = self pointer (TIB address)
+     *   fs:[0x20] = KPCR Prcb pointer (→ fake structure)
+     *   fs:[0x28] = TLS / RW engine context pointer
+     *
+     * We use free space in the BSS area for the fake structures.
+     */
+    {
+        #define XBOX_VA(va) ((void *)((uintptr_t)(va) + g_memory_offset))
+        #define MEM32_INIT(va, val) (*(uint32_t *)XBOX_VA(va) = (uint32_t)(val))
+
+        /*
+         * The TIB lives at XBOX_TIB_VA, NOT at guest 0.
+         *
+         * It used to sit at 0, because the lifter dropped fs: prefixes and
+         * fs:[n] became MEM32(n). That is no longer true - fs: is lifted to
+         * MEM32(g_fs_base + n) at 2,743 sites - and keeping the TIB at 0 was
+         * actively harmful, because it also answers every NULL-DERIVED READ.
+         *
+         * Measured cost of that overlap: the engine's out-of-memory handler
+         * sub_001E8F30 does `eax = MEM32(0x5BC53C); edi = MEM32(eax + 4)` to
+         * get a handler count. With that registry pointer still NULL, the
+         * count came from MEM32(4) - the TIB's TLS-array slot, 0x00750000 -
+         * so the loop ran 7.6 MILLION times over garbage, made ~600 million
+         * failing indirect calls, and returned "nothing freed". That single
+         * overlap was the entire 8-second spin.
+         *
+         * With low memory left as zeros, MEM32(4) reads 0, the count is -1,
+         * the loop is skipped, and the handler returns cleanly. A null
+         * dereference then behaves like a null dereference instead of quietly
+         * yielding whatever the TIB happens to hold.
+         *
+         * g_fs_base is RECOMP_TLS, so this sets it for the calling thread.
+         * That is the main thread and currently the only one; per-thread TIBs
+         * become one allocation per thread here when real threads land.
+         */
+        #define XBOX_TIB_VA 0x00770000   /* free: 0x760000 used, stack at 0x780000 */
+
+        MEM32_INIT(XBOX_TIB_VA + 0x00, 0xFFFFFFFF);      /* SEH: end of chain */
+        MEM32_INIT(XBOX_TIB_VA + 0x08, XBOX_STACK_BASE); /* stack limit (low) */
+
+        /*
+         * fs:[0x04] - TLS slot array, NOT the NT_TIB StackBase.
+         *
+         * Win32's NT_TIB puts StackBase here, and this used to be set to
+         * XBOX_STACK_TOP on that assumption. Xbox's block differs, and every
+         * one of the nine reads in the lifted code is the same TLS pattern:
+         *
+         *     idx   = MEM32(0x5BA794);        // __tls_index
+         *     array = MEM32(4);               // <- here
+         *     block = MEM32(array + idx * 4);
+         *     ... block[2], block[3] ...      // +8, +0xC
+         *
+         * Not one treats it as a stack address. With STACK_TOP here, `block`
+         * came back as garbage off the top of the stack; the CRT's per-thread
+         * init then stored through it and faulted (sub_00346743, reached via
+         * XAPI startup). Ghidra confirms the shape, naming the index
+         * XAPILIB___tls_index.
+         *
+         * __tls_index is whatever the CRT assigned, so populate a range of
+         * slots rather than assuming 0. Blocks are 256 bytes; the largest
+         * offset any caller uses is +0xC.
+         */
+        #define FAKE_TLS_ARRAY_VA   0x00750000  /* free: kernel data ends 0x741000 */
+        #define FAKE_TLS_BLOCK_VA   0x00751000  /* stack starts 0x780000 */
+        #define FAKE_TLS_SLOTS      16
+        #define FAKE_TLS_BLOCK_SZ   0x100
+
+        MEM32_INIT(XBOX_TIB_VA + 0x04, FAKE_TLS_ARRAY_VA);
+        for (unsigned _i = 0; _i < FAKE_TLS_SLOTS; _i++) {
+            MEM32_INIT(FAKE_TLS_ARRAY_VA + _i * 4,
+                       FAKE_TLS_BLOCK_VA + _i * FAKE_TLS_BLOCK_SZ);
+        }
+        memset(XBOX_VA(FAKE_TLS_BLOCK_VA), 0,
+               FAKE_TLS_SLOTS * FAKE_TLS_BLOCK_SZ);
+        /* Self pointer - now a real address rather than the 0 it had to be
+         * when the TIB lived at guest 0. */
+        MEM32_INIT(XBOX_TIB_VA + 0x18, XBOX_TIB_VA);
+
+        /*
+         * fs:[0x20] - On Xbox KPCR, this is the Prcb pointer.
+         * Game code reads [fs:[0x20] + 0x250] which on the real Xbox
+         * accesses a D3D cache structure. We set it to 0 so the read
+         * at offset 0x250 returns 0, causing the cache init to be skipped.
+         */
+        MEM32_INIT(XBOX_TIB_VA + 0x20, 0x00000000);
+
+        /*
+         * fs:[0x28] - Thread local storage / RW engine context.
+         * The RW engine reads [fs:[0x28] + 0x28] to get a pointer
+         * to its data area. We allocate a fake structure at 0x00760000
+         * (in the BSS area) and a data buffer at 0x00700000.
+         */
+        #define FAKE_TLS_VA     0x00760000  /* Fake TLS structure (in BSS) */
+        #define FAKE_RWDATA_VA  0x00700000  /* RW engine data area (in BSS) */
+
+        MEM32_INIT(XBOX_TIB_VA + 0x28, FAKE_TLS_VA);
+        /* TLS[0x28] = pointer to RW data area */
+        MEM32_INIT(FAKE_TLS_VA + 0x28, FAKE_RWDATA_VA);
+
+        /* Point fs: at it. Until this line g_fs_base was 0, which made
+         * MEM32(g_fs_base + n) exactly the MEM32(n) the old layout relied on. */
+        g_fs_base = XBOX_TIB_VA;
+
+        fprintf(stderr, "  TIB: at VA 0x%08X (fs: base), fs[4] TLS array at "
+                        "0x%08X (%u slots), fs[0x28] ctx at 0x%08X, RW data at "
+                        "0x%08X; low memory left ZERO so null reads read null\n",
+                (unsigned)XBOX_TIB_VA,
+                FAKE_TLS_ARRAY_VA, (unsigned)FAKE_TLS_SLOTS,
+                FAKE_TLS_VA, FAKE_RWDATA_VA);
+        #undef XBOX_TIB_VA
+
+        #undef FAKE_TLS_ARRAY_VA
+        #undef FAKE_TLS_BLOCK_VA
+        #undef FAKE_TLS_SLOTS
+        #undef FAKE_TLS_BLOCK_SZ
+        #undef FAKE_TLS_VA
+        #undef FAKE_RWDATA_VA
+        #undef MEM32_INIT
+        #undef XBOX_VA
+    }
+
+    /*
+     * Allocate a page at Xbox kernel address space (0x80010000).
+     *
+     * RenderWare's Xbox driver code (xbcache.c) reads MEM32(0x8001003C)
+     * to parse the Xbox kernel's PE header and find the INIT section for
+     * CPU cache line sizing. On PC, we provide a minimal fake PE header
+     * with 0 sections so the function gracefully skips the cache init.
+     *
+     * The actual native address is 0x80010000 + g_memory_offset.
+     */
+    {
+        #define XBOX_KERNEL_BASE 0x80010000u
+        #define KERNEL_PAGE_SIZE 4096
+        uintptr_t kernel_native = XBOX_KERNEL_BASE + g_memory_offset;
+        g_kernel_memory = VirtualAlloc(
+            (LPVOID)kernel_native,
+            KERNEL_PAGE_SIZE,
+            MEM_RESERVE | MEM_COMMIT,
+            PAGE_READWRITE
+        );
+        if (g_kernel_memory) {
+            /* Zero-fill then set e_lfanew = 0x80 (offset to PE header).
+             * With the rest zeroed, NumberOfSections = 0 and the INIT
+             * section search finds nothing, which is the safe path. */
+            memset(g_kernel_memory, 0, KERNEL_PAGE_SIZE);
+            *(uint32_t *)((uint8_t *)g_kernel_memory + 0x3C) = 0x80;  /* e_lfanew */
+            fprintf(stderr, "  Kernel: fake PE header at Xbox VA 0x%08X (native %p)\n",
+                    XBOX_KERNEL_BASE, g_kernel_memory);
+        } else {
+            fprintf(stderr, "  WARNING: could not map Xbox kernel VA 0x%08X\n",
+                    XBOX_KERNEL_BASE);
+        }
+        #undef XBOX_KERNEL_BASE
+        #undef KERNEL_PAGE_SIZE
+    }
+
+    /* Initialize the dynamic heap. */
+    fprintf(stderr, "  Heap: %u MB at Xbox VA 0x%08X-0x%08X\n",
+            XBOX_HEAP_SIZE / (1024 * 1024), XBOX_HEAP_BASE,
+            XBOX_HEAP_BASE + XBOX_HEAP_SIZE);
+
+    /*
+     * Map mirror views of the 64 MB region.
+     *
+     * On retail Xbox, physical RAM wraps at 64 MB due to the 26-bit
+     * address bus. Address 0x04070000 reads the same data as 0x00070000.
+     * The RenderWare engine's memory walker crosses 64 MB and accesses
+     * mirrored data for an extended walk covering 256+ MB of virtual
+     * addresses. Game init code also writes large data structures past
+     * 64 MB that on real hardware wrap into physical RAM.
+     *
+     * We map additional views of the SAME file mapping section at 64 MB
+     * intervals. All views alias the same physical pages, so reads and
+     * writes at any mirror address correctly access the base data.
+     */
+    {
+        int mirrors_ok = 0;
+        for (int m = 0; m < XBOX_NUM_MIRRORS; m++) {
+            uintptr_t mirror_base = (uintptr_t)g_memory_base +
+                                    (uintptr_t)(m + 1) * g_memory_size;
+            /*
+             * Skip any mirror that would land on the payload arena. The arena
+             * is deliberately placed at the TOP of the sub-256 MB window so
+             * the mirrors the XDK's memory probe actually walks - the first
+             * one, at a single RAM-size above zero - are left intact.
+             */
+            if (g_xbox_payload_size) {
+                uint32_t mv = (uint32_t)(mirror_base - (uintptr_t)g_memory_base);
+                if (mv + g_memory_size > XBOX_PAYLOAD_BASE &&
+                    mv < XBOX_PAYLOAD_BASE + g_xbox_payload_size) {
+                    fprintf(stderr,
+                        "  Mirror %d: skipped, payload arena occupies "
+                        "0x%08X-0x%08X\n", m + 1, XBOX_PAYLOAD_BASE,
+                        XBOX_PAYLOAD_BASE + g_xbox_payload_size);
+                    continue;
+                }
+            }
+            g_mirror_views[m] = MapViewOfFileEx(
+                g_mapping_handle,
+                FILE_MAP_ALL_ACCESS,
+                0, 0,
+                g_memory_size,
+                (LPVOID)mirror_base
+            );
+            if (g_mirror_views[m]) {
+                mirrors_ok++;
+            } else {
+                fprintf(stderr, "  Mirror %d: FAILED at %p (error %lu)\n",
+                        m + 1, (void *)mirror_base, GetLastError());
+            }
+        }
+        fprintf(stderr, "  RAM mirror: %d/%d views mapped (covers %d MB)\n",
+                mirrors_ok, XBOX_NUM_MIRRORS,
+                (int)((mirrors_ok + 1) * g_memory_size / (1024 * 1024)));
+    }
+
+    /*
+     * Map the payload arena, if enabled. Its own mapping, NOT a view of the
+     * RAM section - the whole point is that it is real additional storage
+     * rather than another alias of the same 64 MB.
+     */
+    if (g_xbox_payload_size) {
+        uintptr_t native = (uintptr_t)g_memory_base + XBOX_PAYLOAD_BASE;
+        g_payload_mapping = CreateFileMappingA(
+            INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+            0, g_xbox_payload_size, NULL);
+        if (g_payload_mapping) {
+            g_payload_view = MapViewOfFileEx(
+                g_payload_mapping, FILE_MAP_ALL_ACCESS,
+                0, 0, g_xbox_payload_size, (LPVOID)native);
+        }
+        if (g_payload_view) {
+            fprintf(stderr,
+                "  Payload arena: %u MB at Xbox VA 0x%08X-0x%08X (native %p)\n"
+                "    outside the game's heap; the game's memory accounting is "
+                "unchanged\n",
+                g_xbox_payload_size / (1024u * 1024u), XBOX_PAYLOAD_BASE,
+                XBOX_PAYLOAD_BASE + g_xbox_payload_size, g_payload_view);
+        } else {
+            fprintf(stderr,
+                "  Payload arena: FAILED to map %u MB at 0x%08X (error %lu) - "
+                "resources fall back to the Xbox heap\n",
+                g_xbox_payload_size / (1024u * 1024u), XBOX_PAYLOAD_BASE,
+                GetLastError());
+            g_xbox_payload_size = 0;      /* so xbox_PayloadAlloc stays off */
+            if (g_payload_mapping) { CloseHandle(g_payload_mapping); g_payload_mapping = NULL; }
+        }
+        fflush(stderr);
+    }
+
+    /* Opt-in diagnostic, last of all: everything above writes to low memory
+     * during setup and must not be trapped. Compiles to nothing without
+     * -DRECOMP_TRAP_PAGE_ZERO. */
+    xbox_PageZeroTrapInit(g_memory_base);
+
+    /* Same placement and same reason: everything above writes to guest
+     * memory during setup and must not be trapped. No-op unless
+     * -DRECOMP_WATCH_GUEST and RECOMP_WATCH are both set. */
+    xbox_WatchInit(g_memory_base);
+
+    fprintf(stderr, "xbox_MemoryLayoutInit: complete\n");
+    return TRUE;
+}
+
+void xbox_MemoryLayoutShutdown(void)
+{
+    /* Disarm before anything is unmapped, and print the census. No-op without
+     * -DRECOMP_TRAP_PAGE_ZERO. */
+    xbox_PageZeroTrapShutdown();
+    xbox_WatchShutdown();
+
+    if (g_kernel_memory) {
+        VirtualFree(g_kernel_memory, 0, MEM_RELEASE);
+        g_kernel_memory = NULL;
+    }
+    /* Unmap mirror views first */
+    for (int m = 0; m < XBOX_NUM_MIRRORS; m++) {
+        if (g_mirror_views[m]) {
+            UnmapViewOfFile(g_mirror_views[m]);
+            g_mirror_views[m] = NULL;
+        }
+    }
+    /* Unmap base view */
+    if (g_memory_base) {
+        UnmapViewOfFile(g_memory_base);
+        g_memory_base = NULL;
+        g_memory_size = 0;
+    }
+    /* Close file mapping handle */
+    if (g_mapping_handle) {
+        CloseHandle(g_mapping_handle);
+        g_mapping_handle = NULL;
+    }
+    fprintf(stderr, "xbox_MemoryLayoutShutdown: released\n");
+}
+
+BOOL xbox_IsXboxAddress(uintptr_t address)
+{
+    return (address >= XBOX_BASE_ADDRESS &&
+            address < XBOX_BASE_ADDRESS + g_memory_size);
+}
+
+void *xbox_GetMemoryBase(void)
+{
+    return g_memory_base;
+}
+
+ptrdiff_t xbox_GetMemoryOffset(void)
+{
+    return g_memory_offset;
+}
+
+/* ── Dynamic heap allocator ────────────────────────────────
+ *
+ * Simple bump allocator for MmAllocateContiguousMemory and similar.
+ * Returns Xbox VAs within the mapped region so MEM32() works correctly.
+ * No free support (bump-only for now).
+ */
+static uint32_t g_heap_next = XBOX_HEAP_BASE;
+
+static int g_heap_alloc_count = 0;
+
+/*
+ * High-water mark of the bump heap: everything below is handed out, everything
+ * from here to XBOX_HEAP_BASE + XBOX_HEAP_SIZE is untouched.
+ *
+ * Exposed for bridge_NtQueryVirtualMemory, which has to answer "is there free
+ * memory?" honestly. It used to report the whole ~49 MB heap span as one
+ * MEM_COMMIT region, so the engine's memory scan concluded that all 64 MB was
+ * committed, walked off the top of RAM and never came back (ledger #33/#34).
+ */
+uint32_t xbox_HeapHighWater(void)
+{
+    return g_heap_next;
+}
+
+uint32_t xbox_HeapAlloc(uint32_t size, uint32_t alignment)
+{
+    uint32_t result;
+
+    if (alignment < 4) alignment = 4;
+
+    /* Enforce minimum allocation size.
+     * The Xbox D3D8 code sometimes computes resource sizes from GPU
+     * capabilities that return 0 (since we don't have real NV2A hardware),
+     * resulting in zero-size allocations. With a bump allocator, these all
+     * return the same address, causing overlapping structures. Enforce a
+     * minimum of 4096 bytes so each allocation gets its own memory. */
+    if (size < 4096) size = 4096;
+
+    /* Align the next pointer */
+    result = (g_heap_next + alignment - 1) & ~(alignment - 1);
+
+    if (result + size > XBOX_HEAP_BASE + XBOX_HEAP_SIZE) {
+        fprintf(stderr, "xbox_HeapAlloc: out of memory (requested %u, used %u/%u)\n",
+                size, g_heap_next - XBOX_HEAP_BASE, XBOX_HEAP_SIZE);
+        return 0;
+    }
+
+    g_heap_next = result + size;
+
+    /* Zero-fill the allocated block (Xbox memory is always zeroed) */
+    memset((void *)((uintptr_t)result + g_memory_offset), 0, size);
+
+    g_heap_alloc_count++;
+    fprintf(stderr, "  [HEAP] #%d: size=%u align=%u → 0x%08X..0x%08X (used %u/%u)\n",
+            g_heap_alloc_count, size, alignment, result, result + size,
+            g_heap_next - XBOX_HEAP_BASE, XBOX_HEAP_SIZE);
+    fflush(stderr);
+
+    return result;
+}
+
+/*
+ * Reserve at an EXACT address, for NtAllocateVirtualMemory with a base hint.
+ *
+ * The engine does not just ask for memory - it scans the address space with
+ * NtQueryVirtualMemory, picks a MEM_FREE region itself, reserves at that
+ * exact base, and then checks that it got back the address it asked for
+ * (sub_001FFDA1, loc_001FFF8E: `if (returned != requested) fail`). A bump
+ * allocator cannot express that request, so bridge_NtAllocateVirtualMemory
+ * used to discard the hint and hand back g_heap_next instead - measured
+ * 0x0108D000 for a request of 0x01090000, off by 0x3000. The engine gave up,
+ * never registered a memory region, and every later allocation was refused by
+ * sub_001FE850's region gate. See ledger #75.
+ *
+ * Honouring the hint is safe by construction: since ledger #35 the bridge
+ * reports everything from xbox_HeapHighWater() up as MEM_FREE, so any base
+ * the engine picks from our own report is at or above the bump pointer.
+ * Skipping forward to it can only ever waste address space, never overlap a
+ * live allocation. A hint BELOW the high-water mark would overlap something
+ * already handed out, so it is refused rather than honoured - that would mean
+ * our MEM_FREE reporting and this allocator disagree, which is a bug worth
+ * seeing rather than papering over.
+ */
+uint32_t xbox_HeapAllocAt(uint32_t base, uint32_t size)
+{
+    if (size < 4096) size = 4096;
+
+    if (base < g_heap_next) {
+        fprintf(stderr, "xbox_HeapAllocAt: 0x%08X is below the high-water mark "
+                        "0x%08X - refusing (would overlap a live allocation)\n",
+                base, g_heap_next);
+        fflush(stderr);
+        return 0;
+    }
+
+    if (base + size > XBOX_HEAP_BASE + XBOX_HEAP_SIZE) {
+        fprintf(stderr, "xbox_HeapAllocAt: 0x%08X + %u runs past the heap end "
+                        "0x%08X\n",
+                base, size, XBOX_HEAP_BASE + XBOX_HEAP_SIZE);
+        fflush(stderr);
+        return 0;
+    }
+
+    g_heap_next = base + size;
+
+    /* Zero-fill: Xbox memory is always zeroed, and the skipped gap has never
+     * been handed out, so nothing here can be discarding live data. */
+    memset((void *)((uintptr_t)base + g_memory_offset), 0, size);
+
+    g_heap_alloc_count++;
+    fprintf(stderr, "  [HEAP] #%d: AT 0x%08X size=%u → 0x%08X..0x%08X (used %u/%u)\n",
+            g_heap_alloc_count, base, size, base, base + size,
+            g_heap_next - XBOX_HEAP_BASE, XBOX_HEAP_SIZE);
+    fflush(stderr);
+
+    return base;
+}
+
+void xbox_HeapFree(uint32_t xbox_va)
+{
+    /* No-op for bump allocator */
+    (void)xbox_va;
+}
+
+HANDLE xbox_GetMappingHandle(void)
+{
+    return g_mapping_handle;
+}
