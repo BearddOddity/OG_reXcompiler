@@ -26,14 +26,13 @@ add_executable(ogxbox
   src/config.c
   src/phases.c
   src/context.c
-  # src/emit_operand.c
-  # src/emit.c
-  # src/codegen_writer.c
-  # src/image_writer.c
-  # src/graph_export.c
+  src/emit_operand.c
+  src/emit.c
+  src/writers.c
 )
 target_include_directories(ogxbox PRIVATE src)
 target_link_libraries(ogxbox PRIVATE Zydis tomlc99)
+target_compile_definitions(ogxbox PRIVATE OGX_RUNTIME_DIR="${CMAKE_CURRENT_SOURCE_DIR}/runtime")
 
 if (MSVC)
   target_compile_definitions(ogxbox PRIVATE _CRT_SECURE_NO_WARNINGS)

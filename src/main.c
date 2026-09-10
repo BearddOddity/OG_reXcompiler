@@ -13,6 +13,7 @@
 #include "config.h"
 #include "context.h"
 #include "phases.h"
+#include "writers.h"
 
 static int usage(void) {
     fprintf(stderr, "usage: ogxbox <analyze|emit> <file.xbe> -o <dir> [--config f.toml] [--seed a,b,...]\n");
@@ -74,8 +75,21 @@ int main(int argc, char** argv) {
            ctx.scan.code_regions.len, ctx.scan.data_regions.len);
     printf("validation: %s (%zu errors)\n", clean ? "clean" : "FAILED", ctx.errors.items.len);
 
-    if (do_emit)
-        fprintf(stderr, "[ogxbox-c] emitter not yet ported.\n");
+    write_graph_json(&ctx, out_dir);
+    printf("wrote functions.json / seeded_functions.json / analysis_summary.json -> %s/\n", out_dir);
+
+    if (do_emit) {
+        write_image(&xbe, out_dir);
+        CodegenStats cs;
+#ifndef OGX_RUNTIME_DIR
+#define OGX_RUNTIME_DIR "runtime"
+#endif
+        write_codegen(&ctx, &xbe, out_dir, OGX_RUNTIME_DIR, &cs);
+        double cov = cs.instructions ? 100.0 * (double)(cs.instructions - cs.unimplemented) / cs.instructions : 0;
+        printf("emit: %d functions, %ld instructions, %ld unimplemented (%.1f%% lowered)\n",
+               cs.functions, cs.instructions, cs.unimplemented, cov);
+        printf("wrote recomp_*.c + dispatch/imports/image/kthunks + runtime + CMakeLists.txt -> %s/\n", out_dir);
+    }
 
     ctx_free(&ctx);
     config_free(&cfg);
