@@ -338,19 +338,22 @@ JumpTable* fs_detect_jump_table(FunctionScanner* fs, uint32_t jmp_addr,
     int bound = scan_for_bound(fs, jmp_addr, func_start, index_reg);
     int entry_count = bound > 0 ? bound : MAX_TABLE_ENTRIES;
 
+    /* Keep table order (with duplicate entries) — the emitter switches on the
+     * raw index. Bail if a bad entry appears before the bound is reached. */
     U32Vec targets = {0};
+    size_t distinct = 0;
     for (int i = 0; i < entry_count && i < MAX_TABLE_ENTRIES; i++) {
         uint32_t entry;
         if (!bv_read_u32(fs->bv, (uint32_t)(table_addr + (long)i * 4), &entry)) break;
-        if (entry < region->start || entry >= region->end) { if (bound <= 0) break; else continue; }
-        if (!bv_is_executable(fs->bv, entry)) { if (bound <= 0) break; else continue; }
-        /* dedup */
-        int dup = 0;
-        for (size_t k = 0; k < targets.len; k++) if (targets.data[k] == entry) { dup = 1; break; }
-        if (!dup) vec_push(&targets, entry);
+        if (entry < region->start || entry >= region->end) { if (bound <= 0) break; else { vec_free(&targets); return NULL; } }
+        if (!bv_is_executable(fs->bv, entry)) { if (bound <= 0) break; else { vec_free(&targets); return NULL; } }
+        int seen = 0;
+        for (size_t k = 0; k < targets.len; k++) if (targets.data[k] == entry) { seen = 1; break; }
+        if (!seen) distinct++;
+        vec_push(&targets, entry);
     }
 
-    if (targets.len < 2) { vec_free(&targets); return NULL; }
+    if (targets.len < 2 || distinct < 2) { vec_free(&targets); return NULL; }
 
     JumpTable* jt = calloc(1, sizeof *jt);
     jt->jump_address = jmp_addr;

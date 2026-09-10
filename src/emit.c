@@ -567,8 +567,23 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
                 }
             }
             else if (di.flow == FLOW_INDIRECT_BR && have_raw) {
-                char t[256]; R(&r, 0, t, sizeof t);
-                linef(&e, "REX_LEAVE(); rex_dispatch(c, %s); return;", t);
+                JumpTable* jt = NULL;
+                for (size_t k = 0; k < node->jump_tables.len; k++)
+                    if (node->jump_tables.data[k]->jump_address == addr) { jt = node->jump_tables.data[k]; break; }
+                if (jt && jt->targets.len >= 2) {
+                    /* a real switch — dispatch within the function, not out of it */
+                    linef(&e, "switch (%s) {", reg32_field((ZydisRegister)jt->index_register));
+                    for (size_t k = 0; k < jt->targets.len; k++) {
+                        uint32_t tg = jt->targets.data[k];
+                        if (u32map_has(&e.emitted, tg)) linef(&e, "  case %zu: goto loc_%X;", k, tg);
+                        else linef(&e, "  case %zu: REX_LEAVE(); rex_dispatch(c, 0x%08Xu); return;", k, tg);
+                    }
+                    line(&e, "  default: break;");
+                    line(&e, "}");
+                } else {
+                    char t[256]; R(&r, 0, t, sizeof t);
+                    linef(&e, "REX_LEAVE(); rex_dispatch(c, %s); return;", t);
+                }
             }
             else if (di.flow == FLOW_CONDITIONAL_BR && di.target) {
                 if (u32map_has(&e.emitted, di.target))

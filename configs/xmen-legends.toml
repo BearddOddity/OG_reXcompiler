@@ -27,4 +27,5 @@ seeds = [
   # indirect target". Without them the Alchemy subsystem registry
   # ([0x5bbab4], [0x5bb700]) is never populated and sub_00216210 null-calls.
   0x0C5A10, 0x3556E0, 0x3587F0,
+  0x1ECAD0,   # virtual getter, reached via a module vtable during registry build
 ]
