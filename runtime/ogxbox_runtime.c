@@ -73,6 +73,8 @@ static void (*rex_lookup(uint32_t target))(RecompCtx*) {
     return 0;
 }
 
+int rex_has_fn(uint32_t addr) { return rex_lookup(addr) != 0; }
+
 void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal);  /* recomp_kthunks.c */
 
 void rex_dispatch(RecompCtx* c, uint32_t target) {

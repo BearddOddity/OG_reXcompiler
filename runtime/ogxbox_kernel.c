@@ -114,7 +114,9 @@ void __imp__KeDelayExecutionThread(RecompCtx* c) { Sleep(1); ret_stdcall(c, 0, 3
 void __imp__NtYieldExecution(RecompCtx* c)       { SwitchToThread(); c->eax = 0; }
 
 /* --- threads ----------------------------------------------------------- */
-typedef struct { uint32_t start_routine, start_context, esp; } GuestThreadArg;
+typedef struct { uint32_t entry, a0, a1, nargs, esp; } GuestThreadArg;
+
+int rex_has_fn(uint32_t addr);   /* ogxbox_runtime.c */
 
 static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     GuestThreadArg a = *(GuestThreadArg*)p;
@@ -122,38 +124,55 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     RecompCtx ctx; memset(&ctx, 0, sizeof ctx);
     ctx.esp = a.esp;
     ctx.fpu_cw = 0x037F;
-    /* push start_context as the routine's single arg, then dispatch */
-    PUSH32(&ctx, a.start_context);
-    rex_dispatch_guarded(&ctx, a.start_routine);
+    /* push args right-to-left, no return address (SDK convention) */
+    if (a.nargs >= 2) PUSH32(&ctx, a.a1);
+    if (a.nargs >= 1) PUSH32(&ctx, a.a0);
+    rex_dispatch_guarded(&ctx, a.entry);
     return ctx.eax;
 }
 
-/* PsCreateSystemThreadEx(&handle, extSize, kStack, tlsSize, &tid, start,
- *                        context, suspended, dbgThread, systemRoutine) */
+/* NTSTATUS PsCreateSystemThreadEx(PHANDLE ThreadHandle, ULONG ThreadExtraSize,
+ *   ULONG KernelStackSize, ULONG TlsDataSize, PULONG ThreadId,
+ *   PKSTART_ROUTINE StartRoutine, PVOID StartContext, BOOLEAN CreateSuspended,
+ *   BOOLEAN DebugStack, PKSYSTEM_ROUTINE SystemRoutine)
+ *
+ * On Xbox the kernel enters SystemRoutine(StartRoutine, StartContext); the
+ * SystemRoutine (usually the title's XapiThreadStartup) then calls
+ * StartRoutine(StartContext). If SystemRoutine is absent or not in our
+ * dispatch table, enter StartRoutine(StartContext) directly. */
 void __imp__PsCreateSystemThreadEx(RecompCtx* c) {
     uint32_t phandle = arg(c,1), ptid = arg(c,5);
-    uint32_t start   = arg(c,6), context = arg(c,7);
-    if (!start) {
-        /* StartRoutine came through NULL — an earlier init HLE that should
-         * have populated a function-pointer table is still a stub. Log and
-         * skip the thread rather than dispatch to 0. */
-        fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: NULL StartRoutine "
-                        "(missing init HLE); skipping thread\n");
+    uint32_t start_routine = arg(c,6), start_context = arg(c,7);
+    uint32_t system_routine = arg(c,10);
+    fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx args:");
+    for (int i = 1; i <= 10; i++) fprintf(stderr, " [%d]=0x%08X", i, arg(c,i));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: StartRoutine=0x%08X "
+            "StartContext=0x%08X SystemRoutine=0x%08X\n",
+            start_routine, start_context, system_routine);
+
+    GuestThreadArg* ga = (GuestThreadArg*)malloc(sizeof *ga);
+    if (system_routine && rex_has_fn(system_routine)) {
+        ga->entry = system_routine; ga->a0 = start_routine; ga->a1 = start_context; ga->nargs = 2;
+    } else if (start_routine && rex_has_fn(start_routine)) {
+        ga->entry = start_routine; ga->a0 = start_context; ga->a1 = 0; ga->nargs = 1;
+    } else {
+        fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: neither routine is in "
+                        "the dispatch table; skipping thread\n");
         rex_backtrace();
+        free(ga);
         wr32(phandle, 0);
-        ret_stdcall(c, 0xC0000005u, 10);
+        ret_stdcall(c, 0xC0000001u, 10);
         return;
     }
 
     uint32_t stack_bytes = 0x40000;                 /* 256 KB guest stack */
     uint32_t stack_base  = pool_alloc(stack_bytes);
-    GuestThreadArg* ga = (GuestThreadArg*)malloc(sizeof *ga);
-    ga->start_routine = start; ga->start_context = context;
     ga->esp = stack_base + stack_bytes - 0x20;
 
     DWORD tid = 0;
     HANDLE h = CreateThread(NULL, 0, guest_thread_trampoline, ga, 0, &tid);
-    fprintf(stderr, "[ogxbox] thread: start=0x%08X ctx=0x%08X -> tid %lu\n", start, context, tid);
+    fprintf(stderr, "[ogxbox] thread: entry=0x%08X -> tid %lu\n", ga->entry, tid);
     wr32(phandle, (uint32_t)(uintptr_t)h);
     wr32(ptid, tid);
     ret_stdcall(c, h ? 0 : 0xC0000001u, 10);

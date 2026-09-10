@@ -131,3 +131,47 @@ code from the X-Men recomp):
       still on the old global-register ABI; `g_esp`/`g_eax`/`recomp_lookup` are
       externs there, so it compiles standalone now, links after adaptation)
 - [ ] generated recomp builds against it and runs past the NULL-StartRoutine wall
+
+---
+
+## Blocker found: stdcall arg cleanup + the HLE call boundary (2026-09-10)
+
+Tracing `PsCreateSystemThreadEx` (the "NULL StartRoutine" wall) to root cause:
+
+1. **The wall itself was a wrong stack offset.** `__imp__PsCreateSystemThreadEx`
+   read `StartRoutine` from `arg(c,6)`; on OG Xbox `StartRoutine` is arg 6 and
+   `SystemRoutine` is arg 10, and the kernel enters
+   `SystemRoutine(StartRoutine, StartContext)`. X-Men's own logs confirm:
+   `routine=0x0019F196 (SystemRoutine) ctx1=0x001A1C23 (StartRoutine) ctx2=0`.
+   Both `0x0019F196` (CRT `_threadstartex`) and `0x001A1C23` (thread main) are
+   **undetected by analysis** — reachable only as data values passed to the
+   kernel. Seeding them (`--seed 0x19F196,0x1A1C23`) makes the emitter produce
+   `sub_0019F196` / `sub_001A1C23`; both compile.
+
+2. **The emitter drops the `ret` immediate.** `emit.c` lowers every `ret`
+   (`ZYDIS_MNEMONIC_RET`) to `REX_LEAVE(); return;` — it ignores the `ret N`
+   operand. Our model: `call` is a host C call (no guest return address
+   pushed), so guest `esp` is only moved by explicit push/pop. A `__stdcall`
+   callee's `ret N` must therefore do `c->esp += N` to clean the args the
+   caller pushed; dropping `N` leaks `N` bytes of guest stack on every stdcall
+   return. `__cdecl` is already correct (bare `ret` → `return;`, caller emits
+   its own `add esp, N`).
+
+   Fix: `ret imm` → `c->esp += imm; REX_LEAVE(); return;` (read
+   `raw.operands[0].imm.value.u`). This is on the `c`/`cpp` emitter (`emit.c`);
+   `main`'s C# emitter (`CEmitter.cs`) has the same gap.
+
+3. **`_SEH_prolog4` (`sub_003432A8`) computes its frame from `esp` assuming a
+   pushed return address.** Functions that use it (`sub_0019F196` does) then
+   read args at `[ebp+8]`. With no guest return address our translation is off
+   by 4 for those. Options: (a) the HLE trampoline pushes a dummy return
+   address before dispatching into guest code that uses `_SEH_prolog`;
+   (b) the emitter recognises `_SEH_prolog*`/`_SEH_epilog*` and models the
+   frame directly. (a) is the bring-up shortcut, (b) is correct long-term.
+
+### Consolidation
+
+Part 2 iterates fastest on the `c` branch: self-contained C, the emitter is
+`emit.c` (directly fixable), and it already produces byte-identical analysis to
+`csharp`. Moving Phase A there — kernel vendor + these emitter fixes — and
+leaving `csharp`/`main` as the reference and `cpp` as the ReXGlue-reuse branch.
