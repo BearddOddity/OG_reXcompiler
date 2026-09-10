@@ -17,6 +17,14 @@ that activity is strictly prohibited.
 
 The software is provided "as is", without warranty of any kind. See `LICENSE`.
 
+## AI assistance
+
+Much of this port was written with AI assistance (Claude / Claude Code). Every
+commit produced that way is marked `Co-Authored-By: Claude`. AI-written code can
+be wrong in subtle ways; treat this codebase as needing the same review any
+machine-translated port needs, and do not assume correctness from the fact that
+it compiles or that its tests pass.
+
 ## Lineage
 
 OG_reXcompiler is a C# / x86 port of the analysis and code-generation half
