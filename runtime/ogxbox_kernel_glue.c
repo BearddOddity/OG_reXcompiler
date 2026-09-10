@@ -1,5 +1,5 @@
 /*
- * ogxbox_kernel_glue.c — links the vendored X-Men kernel + ogxbox_bridge.c to
+ * ogxbox_kernel_glue.c — links the vendored OG Xbox kernel replacement layer + ogxbox_bridge.c to
  * the SDK runtime.
  *
  *   - xbox_Heap* over the SDK bump allocator (the vendored xbox_memory_layout.c

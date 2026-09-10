@@ -16,6 +16,7 @@ void config_init(RecompilerConfig* c) {
     u32map_init(&c->switch_tables, 64);
     u32map_init(&c->midasm_hooks, 64);
     u32map_init(&c->seed_functions, 256);
+    u32map_init(&c->manual_functions, 32);
     u32map_init(&c->exception_handler_hints, 64);
 }
 
@@ -33,6 +34,7 @@ void config_free(RecompilerConfig* c) {
     u32map_free(&c->switch_tables);
     u32map_free(&c->midasm_hooks);
     u32map_free(&c->seed_functions);
+    u32map_free(&c->manual_functions);
     u32map_free(&c->exception_handler_hints);
 }
 
@@ -51,6 +53,8 @@ static void apply_table(RecompilerConfig* c, toml_table_t* t) {
     if (d.ok) { snprintf(c->project_name, sizeof c->project_name, "%s", d.u.s); free(d.u.s); }
     d = toml_string_in(t, "file_path");
     if (d.ok) { snprintf(c->file_path, sizeof c->file_path, "%s", d.u.s); free(d.u.s); }
+    d = toml_string_in(t, "manual_file");
+    if (d.ok) { snprintf(c->manual_file, sizeof c->manual_file, "%s", d.u.s); free(d.u.s); }
     d = toml_string_in(t, "out_directory_path");
     if (d.ok) { snprintf(c->out_directory_path, sizeof c->out_directory_path, "%s", d.u.s); free(d.u.s); }
     d = toml_bool_in(t, "generate_exception_handlers");
@@ -68,6 +72,9 @@ static void apply_table(RecompilerConfig* c, toml_table_t* t) {
     }
 
     /* top-level arrays (must precede any [section] in the file) */
+    toml_array_t* mf = toml_array_in(t, "manual_functions");
+    if (mf) for (int i = 0; i < toml_array_nelem(mf); i++)
+        u32set_add(&c->manual_functions, (uint32_t)array_int(mf, i));
     toml_array_t* seeds = toml_array_in(t, "seeds");
     if (seeds) for (int i = 0; i < toml_array_nelem(seeds); i++)
         u32set_add(&c->seed_functions, (uint32_t)array_int(seeds, i));

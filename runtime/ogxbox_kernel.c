@@ -2,9 +2,8 @@
  * ogxbox_kernel.c — starter HLE for the xboxkrnl imports a title hits earliest.
  *
  * Overrides the weak stubs in generated recomp_imports.c. Enough to get a title
- * through CRT + engine init and into its main loop. A real port replaces this
- * with a proper object table / scheduler / VFS (much of which exists as C in
- * the X-Men recomp repo).
+ * through CRT + engine init and into its main loop. A concrete port supplies more (VFS, D3D8 HLE, ...); much of it exists as C in
+ * an OG Xbox recomp toolkit this borrows from.
  *
  * Calling convention: the emitter's `call` pushes a return-address slot, so at
  * HLE entry [esp] is the return slot and [esp+4] is arg 1 (see arg()). A

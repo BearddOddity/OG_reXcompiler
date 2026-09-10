@@ -26,6 +26,7 @@ typedef struct {
     char project_name[64];
     char file_path[512];
     char out_directory_path[512];
+    char manual_file[512];   /* per-title recomp_manual.c, path as written in the config */
     int  generate_exception_handlers;
 
     uint32_t max_jump_extension;
@@ -38,6 +39,7 @@ typedef struct {
     u32map midasm_hooks;  /* addr -> MidAsmHook* */
     u32map seed_functions;        /* set */
     u32map exception_handler_hints; /* set */
+    u32map manual_functions;      /* set: addrs the emitter must NOT emit — recomp_manual.c defines them */
 } RecompilerConfig;
 
 void config_init(RecompilerConfig* c);

@@ -175,16 +175,22 @@ static const char* name_of_cb(void* vc, uint32_t addr) {
     return (n && fn_is_import(n)) ? n->name : NULL;
 }
 
+static int copy_path(const char* src_path, const char* dst_path) {
+    FILE* in = fopen(src_path, "rb");
+    if (!in) return -1;
+    FILE* out = fopen(dst_path, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[8192]; size_t k;
+    while ((k = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, k, out);
+    fclose(in); fclose(out);
+    return 0;
+}
+
 static void copy_file(const char* src_dir, const char* name, const char* dst_dir) {
     char sp[1024], dp[1024];
     snprintf(sp, sizeof sp, "%s/%s", src_dir, name);
     snprintf(dp, sizeof dp, "%s/%s", dst_dir, name);
-    FILE* in = fopen(sp, "rb");
-    if (!in) return;
-    FILE* out = fopen(dp, "wb");
-    char buf[8192]; size_t k;
-    while ((k = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, k, out);
-    fclose(in); fclose(out);
+    copy_path(sp, dp);
 }
 
 static const char* short_kimport(const char* full) {
@@ -215,7 +221,19 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
                          "ogxbox_tib.c", "recomp_manual.c", "ogxbox_main.c", NULL };
     for (int i = 0; rt[i]; i++) copy_file(runtime_dir, rt[i], out_dir);
 
-    /* vendored OG Xbox kernel (X-Men Legends recomp) + its platform shim */
+    /* per-title recomp_manual.c override (config `manual_file`, path relative to
+     * the working directory) — copied over the empty default */
+    if (ctx->config->manual_file[0]) {
+        char dp[1024];
+        snprintf(dp, sizeof dp, "%s/recomp_manual.c", out_dir);
+        if (copy_path(ctx->config->manual_file, dp) != 0)
+            fprintf(stderr, "[ogxbox] warning: manual_file '%s' not found\n",
+                    ctx->config->manual_file);
+        else
+            fprintf(stderr, "[ogxbox] manual overrides: %s\n", ctx->config->manual_file);
+    }
+
+    /* vendored OG Xbox kernel replacement layer + its platform shim */
     char sub[1024];
     snprintf(sub, sizeof sub, "%s/kernel", out_dir);   ensure_dir(sub);
     snprintf(sub, sizeof sub, "%s/platform", out_dir); ensure_dir(sub);
@@ -244,6 +262,12 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
         size_t upto = i + per_file < order.len ? i + per_file : order.len;
         for (size_t k = i; k < upto; k++) {
             FunctionNode* n = fg_get(&ctx->graph, order.data[k]);
+            /* config manual_functions: declared + in the dispatch table, but the
+             * body comes from recomp_manual.c, not the emitter. */
+            if (u32map_has(&ctx->config->manual_functions, n->base)) {
+                sb_addf(&decls, "void %s(RecompCtx* c);\n", n->name);
+                continue;
+            }
             EmitResult er;
             emit_function(ctx->db, n, name_of_cb, &nc, &er);
             stats->functions++;

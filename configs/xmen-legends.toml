@@ -1,11 +1,13 @@
 # X-Men Legends (World) â€” per-title recompiler config.
 #
-# The recompiler's fnptrscan pass recovers ~5,500 function pointers from the
-# _initterm ctor tables and callback arrays automatically. `seeds` here are the
-# few entry points nothing points at even from data:
-#   - the CRT thread-startup path (handed to PsCreateSystemThreadEx as a value)
-#   - a handful of engine helpers reached only through .text-internal jump
-#     tables the scanner does not model
+# includes  `xmen-legends-functions.toml` — 27,673 functions with authoritative
+#           start/end from the disassembler; supersedes fnptrscan for this title.
+# manual_file  per-title recomp_manual.c (hand-written overrides).
+# manual_functions  addrs the emitter must NOT emit — recomp_manual.c defines them.
+# seeds  the few entry points nothing references even from data (CRT thread start).
+
+
+manual_file = "configs/xmen-legends-manual.c"
 
 includes = ["xmen-legends-functions.toml"]
 
