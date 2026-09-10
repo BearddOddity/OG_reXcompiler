@@ -228,20 +228,24 @@ void phase_discover(CodegenContext* ctx) {
     fs_init(&fs, ctx->db, ctx->scan.code_regions.data, ctx->scan.code_regions.len);
 
     /* Function pointers stored in data sections — MSVC _initterm ctor tables,
-     * callback arrays, dispatch tables the recursive scanner never reaches.
-     * DISCOVERED authority: real extent detection and merge/gapfill win.
-     * Skipped when the config supplies a full [functions] list (>1000): that
-     * list is authoritative and fnptrscan's guesses would only add noise. */
-    if (ctx->config->functions.len <= 1000) {
+     * callback arrays, dispatch tables. Even an authoritative [functions] list
+     * built from call-graph + CC-boundary detection misses these (they are only
+     * referenced as data), so always run: DISCOVERED authority means any
+     * CONFIG-listed function wins the overlap, but the roots the list lacks
+     * still get discovered. */
+    {
         U32Vec fps = {0};
         fnptrscan_run(ctx->bv, ctx->scan.code_regions.data, ctx->scan.code_regions.len, &fps);
-        for (size_t i = 0; i < fps.len; i++)
+        size_t added = 0;
+        for (size_t i = 0; i < fps.len; i++) {
+            FunctionNode* ex = fg_get(g, fps.data[i]);
+            if (ex) continue;               /* already known (list or earlier) */
             fg_add_function(g, fps.data[i], 0, AUTH_DISCOVERED, NULL, 1);
-        fprintf(stderr, "  [fnptrscan] %zu data function pointers seeded\n", fps.len);
+            added++;
+        }
+        fprintf(stderr, "  [fnptrscan] %zu data function pointers, %zu new\n",
+                fps.len, added);
         vec_free(&fps);
-    } else {
-        fprintf(stderr, "  [fnptrscan] skipped — config supplies %zu functions\n",
-                ctx->config->functions.len);
     }
 
     long last_count = -1;

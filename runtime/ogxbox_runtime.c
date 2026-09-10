@@ -87,13 +87,42 @@ int rex_has_fn(uint32_t addr) { return rex_lookup(addr) != 0; }
 
 void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal);  /* recomp_kthunks.c */
 
+#ifdef REX_TRACE
+/* Callee-saved register check across indirect calls (ebx/esi/edi/ebp are
+ * callee-saved under cdecl/stdcall/thiscall). A lifted stub that doesn't
+ * restore them silently corrupts its caller. Deduped per target. */
+static void rex_abi_note(uint32_t target, const char* reg, uint32_t before, uint32_t after) {
+    static uint32_t seen[512]; static int nseen;
+    for (int i = 0; i < nseen; i++) if (seen[i] == target) return;
+    if (nseen < 512) seen[nseen++] = target;
+    fprintf(stderr, "[ogxbox] ABI: icall 0x%08X did not restore %s (0x%08X -> 0x%08X)\n",
+            target, reg, before, after);
+}
+#endif
+
 void rex_dispatch(RecompCtx* c, uint32_t target) {
     /* An unfixed-up kernel thunk still holds 0x80000000 | ordinal. */
     if (target & 0x80000000u) { rex_kernel_dispatch(c, target & 0x7FFFFFFFu); return; }
 
     void (*fn)(RecompCtx*) = rex_lookup(target);
-    if (fn) { fn(c); return; }
-    rex_unimplemented("indirect target", target);
+    if (!fn) {
+        /* Corrupted / uninitialised function pointer. Log and return rather
+         * than dispatch to garbage — the caller usually copes (games are
+         * resilient), and a hard fault here buries the real cause upstream. */
+        rex_unimplemented("indirect target", target);
+        c->eax = 0;
+        return;
+    }
+#ifdef REX_TRACE
+    uint32_t b = c->ebx, s = c->esi, d = c->edi, p = c->ebp;
+    fn(c);
+    if (c->ebx != b) rex_abi_note(target, "ebx", b, c->ebx);
+    if (c->esi != s) rex_abi_note(target, "esi", s, c->esi);
+    if (c->edi != d) rex_abi_note(target, "edi", d, c->edi);
+    if (c->ebp != p) rex_abi_note(target, "ebp", p, c->ebp);
+#else
+    fn(c);
+#endif
 }
 
 /* fs: base — per thread. The main thread's is set in rex_boot; each guest
