@@ -6,10 +6,10 @@
  * with a proper object table / scheduler / VFS (much of which exists as C in
  * the X-Men recomp repo).
  *
- * Calling convention: the emitter lowers `call __imp__X` to `__imp__X(c)` with
- * NO pushed return address, so the guest stack top IS arg 1. A __stdcall HLE
- * reads args from [esp], [esp+4], ... and pops 4*argc; __cdecl/varargs leave
- * the pop to the generated caller. Return value -> eax.
+ * Calling convention: the emitter's `call` pushes a return-address slot, so at
+ * HLE entry [esp] is the return slot and [esp+4] is arg 1 (see arg()). A
+ * __stdcall HLE pops the slot + 4*argc (ret_stdcall); __cdecl/varargs pop only
+ * the slot and leave args to the caller (ret_cdecl). Return value -> eax.
  */
 #include "ogxbox_runtime.h"
 #include <stdio.h>
@@ -19,8 +19,12 @@
 
 void rex_dispatch(RecompCtx* c, uint32_t target);
 
-static uint32_t arg(RecompCtx* c, int n) { return MEM32(c->esp + 4u * (uint32_t)(n - 1)); }
-static void ret_stdcall(RecompCtx* c, uint32_t eax, int argc) { c->eax = eax; c->esp += 4u * (uint32_t)argc; }
+/* The generated `call` pushes a return-address slot at [esp]; args follow. */
+static uint32_t arg(RecompCtx* c, int n) { return MEM32(c->esp + 4u + 4u * (uint32_t)(n - 1)); }
+/* __stdcall HLE: pop the return slot + argc arg dwords. */
+static void ret_stdcall(RecompCtx* c, uint32_t eax, int argc) { c->eax = eax; c->esp += 4u + 4u * (uint32_t)argc; }
+/* __cdecl / varargs HLE: pop only the return slot; caller cleans its args. */
+static void ret_cdecl(RecompCtx* c, uint32_t eax) { c->eax = eax; c->esp += 4u; }
 static void wr32(uint32_t p, uint32_t v) { if (p) MEM32(p) = v; }
 
 /* --- pool / heap: a single bump allocator over the top of guest RAM ------ */
@@ -88,7 +92,7 @@ void __imp__RtlTryEnterCriticalSection(RecompCtx* c) { ret_stdcall(c, 1, 1); }
 static void guest_string(uint32_t p) {
     for (int i = 0; i < 512; i++) { char ch = (char)MEM8(p + i); if (!ch) break; fputc(ch, stderr); }
 }
-void __imp__DbgPrint(RecompCtx* c) { fputs("[guest] ", stderr); guest_string(arg(c,1)); fputc('\n', stderr); c->eax = 0; }
+void __imp__DbgPrint(RecompCtx* c) { fputs("[guest] ", stderr); guest_string(arg(c,1)); fputc('\n', stderr); ret_cdecl(c, 0); }
 void __imp__KeBugCheck(RecompCtx* c)    { fprintf(stderr, "[ogxbox] KeBugCheck 0x%X\n", arg(c,1)); exit(2); }
 void __imp__KeBugCheckEx(RecompCtx* c)  { fprintf(stderr, "[ogxbox] KeBugCheckEx 0x%X\n", arg(c,1)); exit(2); }
 void __imp__HalReturnToFirmware(RecompCtx* c) { fprintf(stderr, "[ogxbox] HalReturnToFirmware(%u)\n", arg(c,1)); exit(0); }
@@ -98,11 +102,12 @@ void __imp__RtlRaiseException(RecompCtx* c)   { fprintf(stderr, "[ogxbox] RtlRai
 void __imp__KeQueryPerformanceCounter(RecompCtx* c) {
     LARGE_INTEGER li; QueryPerformanceCounter(&li);
     c->eax = (uint32_t)li.QuadPart; c->edx = (uint32_t)(li.QuadPart >> 32);
-    /* returns LARGE_INTEGER by value in edx:eax — no stack args */
+    c->esp += 4u;  /* stdcall, 0 args: pop the return slot */
 }
 void __imp__KeQueryPerformanceFrequency(RecompCtx* c) {
     LARGE_INTEGER li; QueryPerformanceFrequency(&li);
     c->eax = (uint32_t)li.QuadPart; c->edx = (uint32_t)(li.QuadPart >> 32);
+    c->esp += 4u;
 }
 void __imp__KeQuerySystemTime(RecompCtx* c) {
     FILETIME ft; GetSystemTimeAsFileTime(&ft);
@@ -111,10 +116,12 @@ void __imp__KeQuerySystemTime(RecompCtx* c) {
     ret_stdcall(c, 0, 1);
 }
 void __imp__KeDelayExecutionThread(RecompCtx* c) { Sleep(1); ret_stdcall(c, 0, 3); }
-void __imp__NtYieldExecution(RecompCtx* c)       { SwitchToThread(); c->eax = 0; }
+void __imp__NtYieldExecution(RecompCtx* c)       { SwitchToThread(); ret_stdcall(c, 0, 0); }
 
 /* --- threads ----------------------------------------------------------- */
-typedef struct { uint32_t start_routine, start_context, esp; } GuestThreadArg;
+typedef struct { uint32_t entry, a0, a1, nargs, esp; } GuestThreadArg;
+
+int rex_has_fn(uint32_t addr);   /* ogxbox_runtime.c */
 
 static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     GuestThreadArg a = *(GuestThreadArg*)p;
@@ -122,38 +129,57 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     RecompCtx ctx; memset(&ctx, 0, sizeof ctx);
     ctx.esp = a.esp;
     ctx.fpu_cw = 0x037F;
-    /* push start_context as the routine's single arg, then dispatch */
-    PUSH32(&ctx, a.start_context);
-    rex_dispatch_guarded(&ctx, a.start_routine);
+    /* push args right-to-left, then a return-address slot — the generated
+     * entry reads its args at [esp+4] like any function our `call` reaches. */
+    if (a.nargs >= 2) PUSH32(&ctx, a.a1);
+    if (a.nargs >= 1) PUSH32(&ctx, a.a0);
+    PUSH32(&ctx, 0);
+    rex_dispatch_guarded(&ctx, a.entry);
     return ctx.eax;
 }
 
-/* PsCreateSystemThreadEx(&handle, extSize, kStack, tlsSize, &tid, start,
- *                        context, suspended, dbgThread, systemRoutine) */
+/* NTSTATUS PsCreateSystemThreadEx(PHANDLE ThreadHandle, ULONG ThreadExtraSize,
+ *   ULONG KernelStackSize, ULONG TlsDataSize, PULONG ThreadId,
+ *   PKSTART_ROUTINE StartRoutine, PVOID StartContext, BOOLEAN CreateSuspended,
+ *   BOOLEAN DebugStack, PKSYSTEM_ROUTINE SystemRoutine)
+ *
+ * On Xbox the kernel enters SystemRoutine(StartRoutine, StartContext); the
+ * SystemRoutine (usually the title's XapiThreadStartup) then calls
+ * StartRoutine(StartContext). If SystemRoutine is absent or not in our
+ * dispatch table, enter StartRoutine(StartContext) directly. */
 void __imp__PsCreateSystemThreadEx(RecompCtx* c) {
     uint32_t phandle = arg(c,1), ptid = arg(c,5);
-    uint32_t start   = arg(c,6), context = arg(c,7);
-    if (!start) {
-        /* StartRoutine came through NULL — an earlier init HLE that should
-         * have populated a function-pointer table is still a stub. Log and
-         * skip the thread rather than dispatch to 0. */
-        fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: NULL StartRoutine "
-                        "(missing init HLE); skipping thread\n");
+    uint32_t start_routine = arg(c,6), start_context = arg(c,7);
+    uint32_t system_routine = arg(c,10);
+    fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx args:");
+    for (int i = 1; i <= 10; i++) fprintf(stderr, " [%d]=0x%08X", i, arg(c,i));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: StartRoutine=0x%08X "
+            "StartContext=0x%08X SystemRoutine=0x%08X\n",
+            start_routine, start_context, system_routine);
+
+    GuestThreadArg* ga = (GuestThreadArg*)malloc(sizeof *ga);
+    if (system_routine && rex_has_fn(system_routine)) {
+        ga->entry = system_routine; ga->a0 = start_routine; ga->a1 = start_context; ga->nargs = 2;
+    } else if (start_routine && rex_has_fn(start_routine)) {
+        ga->entry = start_routine; ga->a0 = start_context; ga->a1 = 0; ga->nargs = 1;
+    } else {
+        fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: neither routine is in "
+                        "the dispatch table; skipping thread\n");
         rex_backtrace();
+        free(ga);
         wr32(phandle, 0);
-        ret_stdcall(c, 0xC0000005u, 10);
+        ret_stdcall(c, 0xC0000001u, 10);
         return;
     }
 
     uint32_t stack_bytes = 0x40000;                 /* 256 KB guest stack */
     uint32_t stack_base  = pool_alloc(stack_bytes);
-    GuestThreadArg* ga = (GuestThreadArg*)malloc(sizeof *ga);
-    ga->start_routine = start; ga->start_context = context;
     ga->esp = stack_base + stack_bytes - 0x20;
 
     DWORD tid = 0;
     HANDLE h = CreateThread(NULL, 0, guest_thread_trampoline, ga, 0, &tid);
-    fprintf(stderr, "[ogxbox] thread: start=0x%08X ctx=0x%08X -> tid %lu\n", start, context, tid);
+    fprintf(stderr, "[ogxbox] thread: entry=0x%08X -> tid %lu\n", ga->entry, tid);
     wr32(phandle, (uint32_t)(uintptr_t)h);
     wr32(ptid, tid);
     ret_stdcall(c, h ? 0 : 0xC0000001u, 10);
@@ -183,4 +209,4 @@ void __imp__NtWaitForSingleObject(RecompCtx* c) {
 }
 
 /* --- XAPI process init ------------------------------------------------- */
-void __imp__XapiInitProcess(RecompCtx* c) { c->eax = 0; }   /* __cdecl, no args */
+void __imp__XapiInitProcess(RecompCtx* c) { ret_cdecl(c, 0); }   /* __cdecl, no args */

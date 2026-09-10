@@ -397,7 +397,18 @@ static int emit_one(E* e, RI* r, uint32_t addr) {
         case ZYDIS_MNEMONIC_XLAT:
             line(e, "SET_LO8(c->eax, MEM8((uint32_t)(c->ebx + LO8(c->eax))));"); return 1;
 
-        case ZYDIS_MNEMONIC_RET: line(e, "REX_LEAVE(); return;"); return 1;
+        case ZYDIS_MNEMONIC_RET:
+            /* Pop the return-address slot our `call` pushed, plus N bytes of
+             * caller-pushed args for `ret N` (stdcall). Bare `ret` (cdecl)
+             * leaves arg cleanup to the caller's own `add esp, N`. */
+            if (r->ins.operand_count_visible >= 1 &&
+                r->ops[0].type == ZYDIS_OPERAND_TYPE_IMMEDIATE &&
+                r->ops[0].imm.value.u != 0)
+                linef(e, "c->esp += %lluu; REX_LEAVE(); return;",
+                      4ull + (unsigned long long)r->ops[0].imm.value.u);
+            else
+                line(e, "c->esp += 4u; REX_LEAVE(); return;");
+            return 1;
 
         case ZYDIS_MNEMONIC_MOVSB: case ZYDIS_MNEMONIC_MOVSW: case ZYDIS_MNEMONIC_MOVSD:
         case ZYDIS_MNEMONIC_STOSB: case ZYDIS_MNEMONIC_STOSW: case ZYDIS_MNEMONIC_STOSD:
@@ -501,12 +512,19 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
 
             if (di.flow == FLOW_INT3) { linef(&e, "REX_UNIMPLEMENTED(\"int3\", 0x%08X);", addr); }
             else if (di.flow == FLOW_CALL && di.target) {
+                /* Real x86 `call` pushes the return address; the callee reads its
+                 * stack args relative to it ([ebp+8] = arg1) and `ret N` pops it
+                 * plus N arg bytes. Our `call` is a host C call, but the guest
+                 * stack slot must still exist or every stack-arg read is off by
+                 * one dword. HLE handlers account for the same slot. */
                 const char* nm = name_of ? name_of(name_ctx, di.target) : NULL;
+                linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
                 if (nm) linef(&e, "%s(c);", nm);
                 else linef(&e, "rex_dispatch(c, 0x%08Xu);", di.target);
             }
             else if (di.flow == FLOW_INDIRECT_CALL && have_raw) {
                 char t[256]; R(&r, 0, t, sizeof t);
+                linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
                 linef(&e, "rex_dispatch(c, %s);", t);
             }
             else if (di.flow == FLOW_UNCONDITIONAL_BR && di.target) {

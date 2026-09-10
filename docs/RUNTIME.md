@@ -73,3 +73,105 @@ void __imp__NtClose(RecompCtx* c) {
 Each step is gated on "X-Men gets measurably further" (more functions reached,
 a new subsystem initialised, a frame rendered) — the same loop the X-Men recomp
 has been running by hand.
+
+---
+
+## Phase A — execution (2026-09-10, `main`)
+
+Locked decisions after reading the X-Men Legends recomp kernel
+(`D:\My Games\Xbox Recomp\src\kernel`, same author, ~9,300 lines):
+
+**Memory model: base + offset, kept.** The X-Men kernel already assumes
+`native = guest_va + g_xbox_mem_offset` — the same shape as this SDK's
+`g_guest_ram + addr`. So `g_xbox_mem_offset == (uintptr_t)g_guest_ram` and the
+vendored kernel links against our memory with no marshalling. Identity mapping
+(`VirtualAlloc` at the XBE base) was tested and works, but is not needed and
+would lose the null-page trap for free.
+
+**`xbox_memory_layout.c` owns guest RAM.** It is a complete subsystem — guest
+allocation, the `XBOX_HEAP_BASE` bump heap, `g_xbox_mem_offset`, the page-zero
+trap, `RECOMP_TLS`. It replaces `ogxbox_runtime.c`'s ad-hoc `g_guest_ram`
+malloc; our `g_guest_ram` / `MEM*` macros are re-pointed at its allocation.
+
+**Bridge: adapt X-Men's `kernel_bridge.c`, do not regenerate.** 2,068 lines,
+147 per-ordinal handlers carrying months of bring-up fixes (SEH pointer
+validation via `BRIDGE_PTR_OK`, a handle table for 64-bit `HANDLE`s in 32-bit
+guest slots, the `PsCreateSystemThreadEx` main-thread special case). Adaptation
+is mechanical:
+
+| X-Men | this SDK |
+|---|---|
+| `g_esp`, `g_eax`, `g_ecx`, ... (TLS globals) | `c->esp`, `c->eax`, ... (`RecompCtx*` param) |
+| `static void bridge_X(void)` | `void __imp__X(RecompCtx* c)` |
+| `STACK_ARG(n)` = `BRIDGE_MEM32(g_esp + n*4)` (after the dispatcher pops the return addr) | `MEM32(c->esp + n*4)` — our emitter pushes **no** return addr, so arg0 is already at `c->esp+0` |
+| dispatcher pops `argc*4` after the call | each `__imp__X` does `c->esp += argc*4` itself (`__stdcall`); `__cdecl`/varargs leave it to the caller |
+| `recomp_lookup(va)` for function-pointer args | `rex_dispatch` / the dispatch table |
+| `BRIDGE_MEM32` etc. | `MEM32` etc. (identical math) |
+
+Emitter change is minimal: emit `extern void __imp__X(RecompCtx*);` for adapted
+imports; the weak `__imp__` stub in `recomp_imports.c` stays as the fallback for
+any import not yet adapted.
+
+**Vendored** into `runtime/kernel/` + `runtime/platform/` (all the user's own
+code from the X-Men recomp):
+`kernel_{ob,thread,sync,rtl,file,io,memory,pool,hal,path,crypto,xbox}.c`,
+`kernel_thunks.c`, `kernel_bridge.c` (to be adapted),
+`xbox_memory_layout.{c,h}`, `xbox_page_zero_trap.{c,h}`, `xbox_watch.{c,h}`,
+`kernel.h`, `platform/{xbox_winnt.h,win32_compat.{c,h}}`.
+
+### Step status
+
+- [x] vendor kernel + platform sources
+- [x] `runtime/kernel/` compiles — all 17 files, 0 errors, clang-cl, with
+      `-I runtime -I runtime/kernel` (include root is `runtime/`, so `kernel.h`'s
+      `#include "platform/xbox_winnt.h"` resolves). Windows branches are clean;
+      no POSIX-header trouble.
+- [ ] `xbox_memory_layout.c` wired as the RAM owner; `MEM*` re-pointed
+- [ ] `kernel_bridge.c` → `recomp_kbridge.c`, `__imp__*` exported (the one file
+      still on the old global-register ABI; `g_esp`/`g_eax`/`recomp_lookup` are
+      externs there, so it compiles standalone now, links after adaptation)
+- [ ] generated recomp builds against it and runs past the NULL-StartRoutine wall
+
+---
+
+## Blocker found: stdcall arg cleanup + the HLE call boundary (2026-09-10)
+
+Tracing `PsCreateSystemThreadEx` (the "NULL StartRoutine" wall) to root cause:
+
+1. **The wall itself was a wrong stack offset.** `__imp__PsCreateSystemThreadEx`
+   read `StartRoutine` from `arg(c,6)`; on OG Xbox `StartRoutine` is arg 6 and
+   `SystemRoutine` is arg 10, and the kernel enters
+   `SystemRoutine(StartRoutine, StartContext)`. X-Men's own logs confirm:
+   `routine=0x0019F196 (SystemRoutine) ctx1=0x001A1C23 (StartRoutine) ctx2=0`.
+   Both `0x0019F196` (CRT `_threadstartex`) and `0x001A1C23` (thread main) are
+   **undetected by analysis** — reachable only as data values passed to the
+   kernel. Seeding them (`--seed 0x19F196,0x1A1C23`) makes the emitter produce
+   `sub_0019F196` / `sub_001A1C23`; both compile.
+
+2. **The emitter drops the `ret` immediate.** `emit.c` lowers every `ret`
+   (`ZYDIS_MNEMONIC_RET`) to `REX_LEAVE(); return;` — it ignores the `ret N`
+   operand. Our model: `call` is a host C call (no guest return address
+   pushed), so guest `esp` is only moved by explicit push/pop. A `__stdcall`
+   callee's `ret N` must therefore do `c->esp += N` to clean the args the
+   caller pushed; dropping `N` leaks `N` bytes of guest stack on every stdcall
+   return. `__cdecl` is already correct (bare `ret` → `return;`, caller emits
+   its own `add esp, N`).
+
+   Fix: `ret imm` → `c->esp += imm; REX_LEAVE(); return;` (read
+   `raw.operands[0].imm.value.u`). This is on the `c`/`cpp` emitter (`emit.c`);
+   `main`'s C# emitter (`CEmitter.cs`) has the same gap.
+
+3. **`_SEH_prolog4` (`sub_003432A8`) computes its frame from `esp` assuming a
+   pushed return address.** Functions that use it (`sub_0019F196` does) then
+   read args at `[ebp+8]`. With no guest return address our translation is off
+   by 4 for those. Options: (a) the HLE trampoline pushes a dummy return
+   address before dispatching into guest code that uses `_SEH_prolog`;
+   (b) the emitter recognises `_SEH_prolog*`/`_SEH_epilog*` and models the
+   frame directly. (a) is the bring-up shortcut, (b) is correct long-term.
+
+### Consolidation
+
+Part 2 iterates fastest on the `c` branch: self-contained C, the emitter is
+`emit.c` (directly fixable), and it already produces byte-identical analysis to
+`csharp`. Moving Phase A there — kernel vendor + these emitter fixes — and
+leaving `csharp`/`main` as the reference and `cpp` as the ReXGlue-reuse branch.
