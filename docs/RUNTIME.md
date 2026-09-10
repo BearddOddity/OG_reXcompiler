@@ -289,3 +289,39 @@ next. `-DREX_TRACE` + `g_rex_bt[]` give the failing ctor chain.
 - **VFS** (Phase B): mount the XISO as `D:`, real `Nt*File`
 - **D3D8 HLE** (Phase C): `IDirect3DDevice8` → host — first frame
 - input, audio
+
+---
+
+## Title-general restructure + the static-init wall (2026-09-10, commit 754f76f)
+
+The SDK runtime is now title-agnostic:
+
+- `runtime/recomp_manual.c` is an empty default. A title sets `manual_file` in
+  its config; it is copied over the default at emit.
+- `manual_functions = [ 0xADDR, ... ]` in the config: the emitter declares and
+  keeps them in the dispatch table but does **not** emit a body — the manual
+  file defines `sub_XXXXXXXX`. Needed because a direct `call sub_X` in generated
+  code binds at link time (`g_rex_manual` / `rex_lookup` only covers indirect
+  dispatch).
+- X-Men's two CRT thread-start overrides moved to
+  `configs/xmen-legends-manual.c` (`title_threadstart`, `title_thread_main`).
+- `configs/xmen-legends-functions.toml` — 27,673 authoritative function
+  start/end pairs from the disassembler; `phase_discover` skips `fnptrscan`
+  when the config supplies a full list.
+- `MEM*` wrap RAM addresses below `0x40000000` mod 64 MB (`REX_WRAP`) — the
+  NV2A's 26-bit bus.
+
+**Current wall:** with all of the above the recompiled thread runs ~950
+functions into MSVC C++ static init and hits a NULL virtual call
+(`sub_00123490` → `call [[node+4]+4]`, vtable slot on an object whose ctor
+never installed it) followed by `KeBugCheck(0)` — the game's own assert. A
+sibling tree lookup (`sub_001186A0`) also spins on the same uninitialised
+container; capping it via a manual override only moves the failure downstream.
+
+This is the C++ **static-initializer-order** problem: the recompiled `_initterm`
+walk registers fewer subsystems than the original, so later code finds blank
+entries. The X-Men recomp's `docs/TYPE_DESCRIPTOR.md` analyses the identical
+wall (the Alchemy `SubsystemRegistry` pool bootstrap) and records the fix that
+broke it — a `-1`-marker guard in `sub_0020E547`. Next: find the ctor(s) the
+recompiled order drops, or replay the registration sequence by hand (that
+doc lists it: `sub_00209650(&table)` ~25 times inside `sub_00236500`).
