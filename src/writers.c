@@ -65,6 +65,18 @@ void write_image(const Xbe* xbe, const char* out_dir) {
         off += secs[i]->raw_size;
     }
     fprintf(f, "};\nstatic const unsigned int g_rex_section_count = %zu;\n\n", m);
+
+    /* kernel import thunk slots: {slot VA, ordinal} — the runtime's thunkfix
+     * patches DATA-export slots to the kernel data area and leaves FUNCTION
+     * slots holding 0x80000000|ordinal for rex_kernel_dispatch. */
+    fprintf(f, "typedef struct { unsigned int slot_va, ordinal; } RexKThunk;\n");
+    fprintf(f, "const RexKThunk g_rex_kthunk[] = {\n");
+    for (size_t i = 0; i < xbe->kernel_imports.len; i++) {
+        const XbeKernelImport* k = &xbe->kernel_imports.data[i];
+        fprintf(f, "  { 0x%08Xu, %uu },\n", k->thunk_addr, (unsigned int)k->ordinal);
+    }
+    fprintf(f, "};\nconst unsigned int g_rex_kthunk_count = %zu;\n\n", xbe->kernel_imports.len);
+
     fprintf(f, "const unsigned int g_rex_image_base = 0x%08Xu;\n", xbe->base_address);
     fprintf(f, "const unsigned int g_rex_ram_size  = 0x%08Xu;\n", ram);
     fprintf(f, "const unsigned int g_rex_entry_va  = 0x%08Xu;\n", xbe->entry_point);
@@ -199,7 +211,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
 
     /* runtime headers/sources */
     const char* rt[] = { "ogxbox_runtime.h", "ogxbox_runtime.c", "ogxbox_trace.c",
-                         "ogxbox_kernel.c", "ogxbox_main.c", NULL };
+                         "ogxbox_kernel.c", "ogxbox_thunkfix.c", "recomp_manual.c", "ogxbox_main.c", NULL };
     for (int i = 0; rt[i]; i++) copy_file(runtime_dir, rt[i], out_dir);
 
     /* decls header */
@@ -233,7 +245,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
     {
         FILE* d = open_out(out_dir, "recomp_dispatch.c");
         fprintf(d, "/* generated */\n#include \"recomp_decls.h\"\n");
-        fprintf(d, "typedef struct { unsigned int addr; void (*fn)(RecompCtx*); } RexDispatchEntry;\n");
+        fprintf(d, "/* RexDispatchEntry: ogxbox_runtime.h (via recomp_decls.h) */\n");
         fprintf(d, "const RexDispatchEntry g_rex_dispatch[] = {\n");
         for (size_t k = 0; k < order.len; k++) {
             FunctionNode* n = fg_get(&ctx->graph, order.data[k]);
@@ -280,7 +292,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
         FILE* cm = open_out(out_dir, "CMakeLists.txt");
         fprintf(cm, "cmake_minimum_required(VERSION 3.16)\nproject(recomp C)\nset(CMAKE_C_STANDARD 11)\n");
         fprintf(cm, "add_executable(recomp\n"
-                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c\n"
+                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_thunkfix.c recomp_manual.c\n"
                     "  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c\n");
         for (int k = 0; k < file_idx; k++) fprintf(cm, "  recomp_%04d.c\n", k);
         fprintf(cm, ")\n# add -DREX_TRACE for a guest backtrace on unresolved calls\n"

@@ -208,5 +208,27 @@ void __imp__NtWaitForSingleObject(RecompCtx* c) {
     ret_stdcall(c, 0, 3);
 }
 
+/* --- object / symbolic link ------------------------------------------- */
+/* NtOpenSymbolicLinkObject(PHANDLE, POBJECT_ATTRIBUTES) — the game resolves
+ * device paths (\Device\CdRom0, \Device\Harddisk0\Partition1, ...) this way
+ * during drive mounting. Hand back a fake handle; the query below answers it. */
+void __imp__NtOpenSymbolicLinkObject(RecompCtx* c) {
+    uint32_t phandle = arg(c,1);
+    wr32(phandle, 0x5B10D000u | (arg(c,2) & 0xFFFu));   /* fake, carries a tag */
+    ret_stdcall(c, 0 /* STATUS_SUCCESS */, 2);
+}
+/* NtQuerySymbolicLinkObject(HANDLE, PSTRING LinkTarget, PULONG ReturnedLength)
+ * Write an empty target — enough for the mount logic to proceed without a
+ * real device tree (the VFS layer, Phase B, replaces this). */
+void __imp__NtQuerySymbolicLinkObject(RecompCtx* c) {
+    uint32_t pstr = arg(c,2), plen = arg(c,3);
+    if (pstr) {
+        MEM16(pstr + 0) = 0;          /* Length */
+        /* leave MaximumLength / Buffer as the caller set them */
+    }
+    wr32(plen, 0);
+    ret_stdcall(c, 0, 3);
+}
+
 /* --- XAPI process init ------------------------------------------------- */
 void __imp__XapiInitProcess(RecompCtx* c) { ret_cdecl(c, 0); }   /* __cdecl, no args */

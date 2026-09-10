@@ -24,8 +24,7 @@ void rex_leave(void) {
     if (t_top > 0) t_top--;
 }
 
-/* recomp_dispatch.c */
-typedef struct { unsigned int addr; void (*fn)(RecompCtx*); } RexDispatchEntry;
+/* recomp_dispatch.c — RexDispatchEntry is in ogxbox_runtime.h */
 extern const RexDispatchEntry g_rex_dispatch[];
 extern const unsigned int     g_rex_dispatch_count;
 

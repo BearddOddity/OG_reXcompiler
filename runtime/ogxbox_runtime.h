@@ -124,6 +124,13 @@ void rex_unimplemented(const char* what, uint32_t addr);
 /* Indirect call/jump dispatch — resolves a guest address to a generated fn. */
 void rex_dispatch(RecompCtx* c, uint32_t target);
 
+/* True if a generated (or manually overridden) function exists at addr. */
+int rex_has_fn(uint32_t addr);
+
+/* One generated function: guest entry address -> its C function.
+ * recomp_manual.c defines g_rex_manual[] of these for hand-written overrides. */
+typedef struct { uint32_t addr; void (*fn)(RecompCtx*); } RexDispatchEntry;
+
 /* Boot: alloc guest RAM, map recomp_image.bin, run the XBE entry point.
  * Returns the guest's eax at exit, or a negative error. */
 int rex_boot(const char* image_bin_path);

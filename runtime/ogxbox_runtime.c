@@ -15,6 +15,9 @@
 
 uint8_t*  g_guest_ram = 0;
 uint32_t  g_guest_ram_size = 0;
+ptrdiff_t g_xbox_mem_offset = 0;   /* native = guest_va + this (== (uintptr_t)g_guest_ram) */
+
+void ogxbox_thunkfix_run(void);    /* ogxbox_thunkfix.c */
 
 /* A hard fault in generated code (bad guest pointer) never reaches
  * rex_unimplemented, so catch it here and dump the guest backtrace. */
@@ -52,9 +55,14 @@ void rex_dispatch_guarded(RecompCtx* c, uint32_t target) {
 }
 
 /* The generated dispatch table (recomp_dispatch.c). Sorted by guest address. */
-typedef struct { uint32_t addr; void (*fn)(RecompCtx*); } RexDispatchEntry;
-extern const RexDispatchEntry g_rex_dispatch[];
+extern const RexDispatchEntry g_rex_dispatch[];   /* RexDispatchEntry: ogxbox_runtime.h */
 extern const uint32_t         g_rex_dispatch_count;
+
+/* Per-title hand-written overrides (recomp_manual.c) — checked before the
+ * generated table, for functions the scanner can't recover (reachable only as
+ * data values, misaligned entries, etc). */
+extern const RexDispatchEntry g_rex_manual[];
+extern const uint32_t         g_rex_manual_count;
 
 void rex_unimplemented(const char* what, uint32_t addr) {
     fprintf(stderr, "[ogxbox] unimplemented '%s' at 0x%08X\n", what, addr);
@@ -62,6 +70,8 @@ void rex_unimplemented(const char* what, uint32_t addr) {
 }
 
 static void (*rex_lookup(uint32_t target))(RecompCtx*) {
+    for (uint32_t i = 0; i < g_rex_manual_count; i++)
+        if (g_rex_manual[i].addr == target) return g_rex_manual[i].fn;
     uint32_t lo = 0, hi = g_rex_dispatch_count;
     while (lo < hi) {
         uint32_t mid = (lo + hi) >> 1;
@@ -99,6 +109,12 @@ int rex_boot(const char* image_bin_path) {
     int rc = rex_load_image(image_bin_path);
     if (rc != 0) { fprintf(stderr, "[ogxbox] image load failed: %d\n", rc); return rc; }
 
+    /* g_xbox_mem_offset: vendored kernel code translates guest VA -> native as
+     * (va + offset); our guest RAM is a flat host buffer, so offset == base. */
+    g_xbox_mem_offset = (ptrdiff_t)(uintptr_t)g_guest_ram;
+
+    ogxbox_thunkfix_run();
+
     void (*entry)(RecompCtx*) = rex_lookup(g_rex_entry_va);
     if (!entry) { fprintf(stderr, "[ogxbox] no generated fn for entry 0x%08X\n", g_rex_entry_va); return -5; }
 
@@ -106,6 +122,7 @@ int rex_boot(const char* image_bin_path) {
     memset(&ctx, 0, sizeof ctx);
     ctx.esp = g_rex_initial_esp;
     ctx.fpu_cw = 0x037F;
+    PUSH32(&ctx, 0);   /* return-address slot — the entry reads args at [esp+4] */
 
     rex_run_guarded(entry, &ctx);
     return (int)ctx.eax;
