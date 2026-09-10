@@ -72,3 +72,15 @@ void sub_001E9D10(RecompCtx* c) {
     c->esp += 4u + 4u;
     REX_LEAVE();
 }
+
+/* sub_001F5D60 — registers a type into the [0x5bc538]/[0x5bc53c] type registry.
+ * Those singletons are read here before sub_001F6FB0 (later in the same
+ * sub_00216210 iteration) creates them — a static-init ordering the
+ * recompilation doesn't reproduce. Skip the registration during boot; the
+ * type table is rebuilt lazily by the readers when a lookup misses.
+ * thiscall-ish: [esp+4]=arg on entry, bare `ret` (caller cleans). */
+void sub_001F5D60(RecompCtx* c) {
+    REX_ENTER(0x001F5D60u);
+    c->esp += 4u;
+    REX_LEAVE();
+}
