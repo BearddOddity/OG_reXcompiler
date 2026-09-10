@@ -213,3 +213,41 @@ stub HLE doesn't actually wake).
   main thread is waiting on actually being spawned and run.
 - Then the CRT per-thread setup (`sub_001A3639` etc., currently skipped) needs
   a minimal TIB so `fs:[0x28]` chains resolve.
+
+---
+
+## Phase A — bridge wired (2026-09-10, commit aa390fe / 8953a26)
+
+The generated recomp now compiles and links the full vendored OG Xbox kernel
+(13 `kernel/*.c` + `platform/win32_compat.c`) plus `ogxbox_bridge.c` —
+`kernel_bridge.c` mechanically retargeted from the X-Men recomp's
+global-register ABI to `RecompCtx*` (61 handlers, ~140 ordinals). `rex_kernel_dispatch`
+(in `ogxbox_kernel_glue.c`): ordinal 255 → our real-thread PsCreateSystemThreadEx,
+else the bridge handler + `c->esp += 4 + stdcall_args_for_ordinal(ord)`, else the
+generated per-ordinal `rex_kthunk_fallback`. Heap = one bump allocator
+(`rex_pool_alloc`, 0x800000-0x2E00000) shared by the HLE and the vendored
+kernel's `xbox_Heap*`. `xbox_MemoryLayoutInit` stubbed (the SDK owns RAM).
+
+Bridge handlers execute (their trace lines appear). Also fixed: the weak
+`__imp__` stub and `rex_kthunk_fallback`'s default now pop the return-address
+slot (they were leaking >=4 bytes per unhandled kernel call).
+
+### Blocker: kernel-thunk ordinal mapping
+
+X-Men's engine init crashes in `sub_001A23F3` writing `[ebp-0x34]` with a
+near-zero `ebp`. Traced to `sub_001A2DE0`, a 5-arg `ret 0x14` forwarder that
+calls the import thunk `sub_001A3C8C: jmp [0x003C6C44]` with all 5 args and no
+`add esp` after — implying its target is a 5-arg `__stdcall`. But
+`g_rex_kthunk` records `0x003C6C44 → ordinal 24` (`ExQueryPoolBlockSize`, a
+**1-arg** function), the bridge has no handler for 24, so the fallback pops only
+4 bytes and the 20 bytes of leaked args corrupt `sub_001A2DE0`'s saved `ebp`.
+Two other call sites to the same thunk push **4** args, not 5 — inconsistent
+arg counts to one stdcall target is impossible on hardware, so **either the XBE
+kernel-thunk table parse (`xbe.c`, offset 0x0158 + the u32 array) is off by an
+entry, or `sub_001A2DE0` / the 4-arg sites are mis-decoded**. Verify the
+ordinal→thunk-VA mapping against the raw XBE first.
+
+Downstream, the real fix for thunk-forwarders (`sub_X: jmp [import]` called
+with caller-varying arg counts, i.e. `__cdecl`): the glue must not pop args for
+those — the caller's own `add esp, N` does. The emitter can mark a
+`jmp [import]`-only function so the dispatch pops just the return slot.
