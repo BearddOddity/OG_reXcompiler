@@ -138,8 +138,11 @@ static inline void rex_flags_sub(RecompCtx* c, uint64_t a, uint64_t b, uint64_t 
 void rex_unimplemented(const char* what, uint32_t addr);
 #define REX_UNIMPLEMENTED(what, addr) rex_unimplemented((what), (addr))
 
-/* Indirect call/jump dispatch — resolves a guest address to a generated fn. */
+/* Indirect jump/tail dispatch — resolves a guest address to a generated fn. */
 void rex_dispatch(RecompCtx* c, uint32_t target);
+/* Indirect call — same, but a return slot is already pushed; an unresolved
+ * target pops it so the caller's frame stays balanced. */
+void rex_icall(RecompCtx* c, uint32_t target);
 
 /* True if a generated (or manually overridden) function exists at addr. */
 int rex_has_fn(uint32_t addr);

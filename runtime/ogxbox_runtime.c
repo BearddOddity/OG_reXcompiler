@@ -126,6 +126,34 @@ static void rex_abi_note(uint32_t target, const char* reg, uint32_t before, uint
 }
 #endif
 
+static void rex_dispatch_fn(RecompCtx* c, uint32_t target, void (*fn)(RecompCtx*)) {
+#ifdef REX_TRACE
+    uint32_t b = c->ebx, s = c->esi, d = c->edi, p = c->ebp;
+    fn(c);
+    if (c->ebx != b) rex_abi_note(target, "ebx", b, c->ebx);
+    if (c->esi != s) rex_abi_note(target, "esi", s, c->esi);
+    if (c->edi != d) rex_abi_note(target, "edi", d, c->edi);
+    if (c->ebp != p) rex_abi_note(target, "ebp", p, c->ebp);
+#else
+    (void)target;
+    fn(c);
+#endif
+}
+
+/* Indirect CALL through a corrupt/uninitialised function pointer. The emitter
+ * has already pushed a guest return-address slot; unwind past it so the call
+ * site's frame stays balanced (a resolved callee's `ret` would have popped
+ * it). Stack args a stdcall callee would also have popped still leak, but a
+ * 4-byte slip is recoverable where an 8+-byte one corrupts the caller. */
+void rex_icall(RecompCtx* c, uint32_t target) {
+    if (target & 0x80000000u) { rex_kernel_dispatch(c, target & 0x7FFFFFFFu); return; }
+    void (*fn)(RecompCtx*) = rex_lookup(target);
+    if (fn) { rex_dispatch_fn(c, target, fn); return; }
+    rex_unimplemented("indirect call", target);
+    c->eax = 0;
+    c->esp += 4u;   /* pop the return slot */
+}
+
 void rex_dispatch(RecompCtx* c, uint32_t target) {
     /* An unfixed-up kernel thunk still holds 0x80000000 | ordinal. */
     if (target & 0x80000000u) { rex_kernel_dispatch(c, target & 0x7FFFFFFFu); return; }

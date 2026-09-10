@@ -541,7 +541,7 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             else if (di.flow == FLOW_INDIRECT_CALL && have_raw) {
                 char t[256]; R(&r, 0, t, sizeof t);
                 linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
-                linef(&e, "rex_dispatch(c, %s);", t);
+                linef(&e, "rex_icall(c, %s);", t);
             }
             else if (di.flow == FLOW_UNCONDITIONAL_BR && di.target) {
                 if (u32map_has(&e.emitted, di.target)) linef(&e, "goto loc_%X;", di.target);
