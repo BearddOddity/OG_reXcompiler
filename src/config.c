@@ -170,7 +170,10 @@ static int load_recursive(RecompilerConfig* c, const char* path, int depth) {
             toml_datum_t d = toml_string_at(inc, i);
             if (!d.ok) continue;
             char full[1024];
-            snprintf(full, sizeof full, "%s%s", dir, d.u.s);
+            int absolute = d.u.s[0] == '/' || d.u.s[0] == '\\' ||
+                           (d.u.s[0] && d.u.s[1] == ':');   /* /x  \\x  C:\x */
+            if (absolute) snprintf(full, sizeof full, "%s", d.u.s);
+            else          snprintf(full, sizeof full, "%s%s", dir, d.u.s);
             free(d.u.s);
             if (load_recursive(c, full, depth + 1) != 0) { toml_free(t); return 1; }
         }

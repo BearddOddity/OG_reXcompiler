@@ -1,0 +1,91 @@
+cmake_minimum_required(VERSION 3.25)
+project(@NAME@ NONE)
+
+# Scaffolded by `ogxbox init`. End-user flow:
+#   cmake --preset @NAME@          # configure: runs Part 1 (emit)
+#   cmake --build --preset @NAME@  # Part 2: compile the recompiled title
+#   ctest --preset @NAME@          # smoke: boot it, assert progress
+# See docs/AUTOMATION.md.
+
+set(OGX_SDK_ROOT "@SDK_ROOT@" CACHE PATH "OG Xbox recompiler SDK root")
+set(OGX_XBE      "@XBE@"      CACHE FILEPATH "guest XBE")
+set(OGX_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/manifest.toml")
+option(OGX_TRACE "build the recompiled title with -DREX_TRACE (needed by the smoke test)" ON)
+
+# No default CMAKE_BUILD_TYPE: -O2 exposes latent UB in the mid-bringup
+# recompilation, which is debugged unoptimised. Pass -DCMAKE_BUILD_TYPE=Release
+# once the title boots clean.
+
+# --- 1. locate the recompiler -------------------------------------------------
+find_program(OGX_EXE ogxbox
+  HINTS "${OGX_SDK_ROOT}/build" "${OGX_SDK_ROOT}/build/Release"
+        "${OGX_SDK_ROOT}/out/build" "${OGX_SDK_ROOT}/out/build/Release"
+  NO_CACHE)
+if(NOT OGX_EXE)
+  message(FATAL_ERROR
+    "ogxbox not found. Build it once:\n"
+    "  cmake -S \"${OGX_SDK_ROOT}\" -B \"${OGX_SDK_ROOT}/build\" -G Ninja -DCMAKE_C_COMPILER=clang-cl\n"
+    "  cmake --build \"${OGX_SDK_ROOT}/build\" --target ogxbox")
+endif()
+
+# --- 2. Part 1: emit at configure time, gated on a stamp --------------------
+set(OGX_GEN   "${CMAKE_CURRENT_BINARY_DIR}/gen")
+set(OGX_STAMP "${OGX_GEN}/.emit.stamp")
+set(_inputs "${OGX_XBE}" "${OGX_MANIFEST}" "${OGX_EXE}")
+file(GLOB_RECURSE _rt CONFIGURE_DEPENDS "${OGX_SDK_ROOT}/runtime/*")
+list(APPEND _inputs ${_rt})
+
+set(_stale TRUE)
+if(EXISTS "${OGX_STAMP}")
+  set(_stale FALSE)
+  foreach(f IN LISTS _inputs)
+    if("${f}" IS_NEWER_THAN "${OGX_STAMP}")
+      set(_stale TRUE)
+    endif()
+  endforeach()
+endif()
+
+if(_stale)
+  message(STATUS "ogxbox emit -> ${OGX_GEN}")
+  execute_process(
+    COMMAND "${OGX_EXE}" emit "${OGX_XBE}" -o "${OGX_GEN}" --config "${OGX_MANIFEST}"
+    WORKING_DIRECTORY "${OGX_SDK_ROOT}"   # relative paths in configs/*.toml resolve here
+    RESULT_VARIABLE _rc)
+  # exit 3 == analysis-validation warnings; the tree is still written and builds
+  if(NOT EXISTS "${OGX_GEN}/CMakeLists.txt")
+    message(FATAL_ERROR "emit produced no project (exit ${_rc})")
+  endif()
+  if(NOT _rc EQUAL 0)
+    message(WARNING "ogxbox emit exit ${_rc} (validation warnings) — continuing")
+  endif()
+  file(TOUCH "${OGX_STAMP}")
+endif()
+
+# --- 3. Part 2: compile the generated runtime + recompiled title ------------
+# The generated CMakeLists honours -DREX_TRACE and copies recomp_image.bin
+# next to the exe itself (add_custom_command(TARGET ...) must be same-directory
+# before CMake 3.29).
+set(REX_TRACE ${OGX_TRACE} CACHE BOOL "" FORCE)
+add_subdirectory("${OGX_GEN}" "${CMAKE_CURRENT_BINARY_DIR}/recomp")
+
+# --- 4. smoke test (guest-progress assertion) ------------------------------
+enable_testing()
+file(STRINGS "${OGX_MANIFEST}" _l REGEX "min_guest_calls")
+string(REGEX MATCH "[0-9]+" OGX_MIN_CALLS "${_l}")
+file(STRINGS "${OGX_MANIFEST}" _l REGEX "timeout_s")
+string(REGEX MATCH "[0-9]+" OGX_TIMEOUT "${_l}")
+if(NOT OGX_MIN_CALLS)
+  set(OGX_MIN_CALLS 1)
+endif()
+if(NOT OGX_TIMEOUT)
+  set(OGX_TIMEOUT 25)
+endif()
+math(EXPR _test_timeout "${OGX_TIMEOUT} + 20")
+
+add_test(NAME @NAME@-smoke
+  COMMAND "${CMAKE_COMMAND}"
+    "-DEXE=$<TARGET_FILE:recomp>"
+    "-DMIN_CALLS=${OGX_MIN_CALLS}"
+    "-DRUN_TIMEOUT=${OGX_TIMEOUT}"
+    -P "${OGX_SDK_ROOT}/templates/title/smoke.cmake")
+set_tests_properties(@NAME@-smoke PROPERTIES TIMEOUT ${_test_timeout})

@@ -14,13 +14,35 @@
 #include "context.h"
 #include "phases.h"
 #include "writers.h"
+#include "init.h"
 
 static int usage(void) {
-    fprintf(stderr, "usage: ogxbox <analyze|emit> <file.xbe> -o <dir> [--config f.toml] [--seed a,b,...]\n");
+    fprintf(stderr,
+        "usage:\n"
+        "  ogxbox init <file.xbe> [--name n] [--config f.toml] [-o titles-dir]\n"
+        "              [--min-calls N] [--timeout S] [--force]\n"
+        "  ogxbox <analyze|emit> <file.xbe> -o <dir> [--config f.toml] [--seed a,b,...]\n");
     return 2;
 }
 
+static int cmd_init(int argc, char** argv) {
+    InitOptions o = { 0 };
+    o.xbe_path = (argc >= 3 && argv[2][0] != '-') ? argv[2] : NULL;
+    for (int i = 3; i < argc; i++) {
+        if      (strcmp(argv[i], "--name") == 0      && i + 1 < argc) o.name = argv[++i];
+        else if (strcmp(argv[i], "--config") == 0    && i + 1 < argc) o.recomp_config = argv[++i];
+        else if (strcmp(argv[i], "-o") == 0          && i + 1 < argc) o.titles_dir = argv[++i];
+        else if (strcmp(argv[i], "--min-calls") == 0 && i + 1 < argc) o.min_guest_calls = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--timeout") == 0   && i + 1 < argc) o.timeout_s = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--force") == 0)                     o.force = 1;
+    }
+    if (!o.xbe_path) return usage();
+    return ogx_init_project(&o);
+}
+
 int main(int argc, char** argv) {
+    if (argc < 2) return usage();
+    if (strcmp(argv[1], "init") == 0) return cmd_init(argc, argv);
     if (argc < 3) return usage();
     int do_emit;
     if      (strcmp(argv[1], "analyze") == 0) do_emit = 0;

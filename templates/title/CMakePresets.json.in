@@ -1,0 +1,20 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "@NAME@",
+      "displayName": "@NAME@ — recompile + smoke",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl",
+        "OGX_TRACE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [ { "name": "@NAME@", "configurePreset": "@NAME@" } ],
+  "testPresets": [
+    { "name": "@NAME@", "configurePreset": "@NAME@", "output": { "outputOnFailure": true } }
+  ]
+}

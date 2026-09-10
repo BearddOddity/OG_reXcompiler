@@ -58,5 +58,9 @@ int main(int argc, char** argv) {
 #endif
     }
     fprintf(stderr, "[ogxbox] host timeout, exiting\n");
-    return rc < 0 ? 1 : 0;
+    /* Guest threads are still running (usually spinning in engine init). A
+     * normal `return` runs CRT teardown while they execute -> they fault on
+     * memory being pulled out from under them. Kill the process outright. */
+    fflush(stderr);
+    ExitProcess((UINT)(rc < 0 ? 1 : 0));
 }

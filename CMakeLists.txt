@@ -29,6 +29,7 @@ add_executable(ogxbox
   src/emit_operand.c
   src/emit.c
   src/writers.c
+  src/init.c
 )
 target_include_directories(ogxbox PRIVATE src)
 target_link_libraries(ogxbox PRIVATE Zydis tomlc99)

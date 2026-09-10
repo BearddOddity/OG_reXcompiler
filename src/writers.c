@@ -347,9 +347,17 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
                     "  kernel/kernel_hal.c kernel/kernel_path.c kernel/kernel_crypto.c kernel/kernel_xbox.c\n"
                     "  kernel/kernel_thunks.c kernel/ogxbox_bridge.c platform/win32_compat.c\n");
         for (int k = 0; k < file_idx; k++) fprintf(cm, "  recomp_%04d.c\n", k);
-        fprintf(cm, ")\ntarget_link_libraries(recomp PRIVATE bcrypt)\n"
-                    "# add -DREX_TRACE for a guest backtrace on unresolved calls\n"
-                    "# recomp_image.bin must sit next to the executable at run time.\n");
+        fprintf(cm, ")\ntarget_link_libraries(recomp PRIVATE bcrypt)\n");
+        /* REX_TRACE: guest call trace + stack-balance instruments. The title
+         * superbuild sets -DREX_TRACE=ON; a bare `cmake` build leaves it off. */
+        fprintf(cm, "option(REX_TRACE \"guest call trace + stack-balance instruments\" OFF)\n"
+                    "if(REX_TRACE)\n  target_compile_definitions(recomp PRIVATE REX_TRACE)\nendif()\n");
+        /* recomp_image.bin must sit next to the executable at run time. */
+        fprintf(cm, "add_custom_command(TARGET recomp POST_BUILD\n"
+                    "  COMMAND \"${CMAKE_COMMAND}\" -E copy_if_different\n"
+                    "          \"${CMAKE_CURRENT_SOURCE_DIR}/recomp_image.bin\"\n"
+                    "          \"$<TARGET_FILE_DIR:recomp>/recomp_image.bin\"\n"
+                    "  VERBATIM)\n");
         fclose(cm);
     }
     (void)short_kimport; (void)round_up;

@@ -54,6 +54,23 @@ ogxbox emit    <game.xbe> -o out [--config title.toml]   # + the C recompilation
 `CMakeLists.txt` and the full runtime + kernel tree. `recomp_image.bin` must
 sit next to the built executable.
 
+### Per-title automation — `ogxbox init` + `cmake --preset`
+
+ReXGlue's flow: scaffold once, then `cmake`.
+
+```
+cmake -S . -B build -G Ninja -DCMAKE_C_COMPILER=clang-cl   # once: build the recompiler
+cmake --build build --target ogxbox
+
+ogxbox init "<game.xbe>" --name mygame --config configs/mygame.toml
+cd titles/mygame
+cmake  --preset mygame          # configure: runs Part 1 (emit)
+cmake  --build --preset mygame  # Part 2: compiles the recompiled title
+ctest  --preset mygame          # smoke: boots it, asserts guest-call progress
+```
+
+See [docs/AUTOMATION.md](docs/AUTOMATION.md).
+
 ### Inner loop — `scripts/ogx.ps1`
 
 ```

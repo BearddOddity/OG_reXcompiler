@@ -1,0 +1,22 @@
+# @NAME@ — recompilation manifest
+#
+# `ogxbox emit --config manifest.toml` reads the recompiler keys.
+# `cmake --preset @NAME@` reads [project] and [smoke].
+#
+# NOTE: `includes` is a root key, so it must appear before any [table] header.
+
+# --- recompiler config ---------------------------------------------------------
+# The real per-title config (functions list, manual_file, seeds, switch tables).
+# Edit that file, not this manifest. See configs/*.toml, docs/RUNTIME.md.
+includes = [ "@RECOMP_CONFIG@" ]
+
+[project]
+name = "@NAME@"
+xbe  = "@XBE@"
+
+[smoke]
+# ctest fails if the recompiled title does not reach this many guest function
+# calls, or if it faults (access violation / KeBugCheck) during boot. Raise
+# min_guest_calls as the port advances so regressions are caught.
+min_guest_calls = @MIN_CALLS@
+timeout_s       = @TIMEOUT@
