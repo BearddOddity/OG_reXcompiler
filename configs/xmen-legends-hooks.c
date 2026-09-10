@@ -14,6 +14,36 @@
 
 uint32_t rex_pool_alloc(uint32_t size);
 
+/* Route the guest CRT heap onto the runtime bump allocator. The real impl
+ * (sub_001A0B0C, an SEH-wrapped segregated-freelist allocator reached via
+ * sub_003437F3 / sub_00343AD8 / ...) doesn't unwind cleanly — it leaks ebx on
+ * an early-return path, which sends sub_00216210 into its switch and skips the
+ * registry init. Every block carries a CRT-style 4-byte size header at [ptr-4].
+ * free is a no-op (bump allocator); fine for boot. */
+static uint32_t rex_heap_block(uint32_t size) {
+    if (!size) size = 1u;
+    uint32_t blk = rex_pool_alloc(size + 16u);
+    if (!blk) return 0u;
+    MEM32(blk + 12u) = size;      /* header at (ret - 4) */
+    return blk + 16u;
+}
+
+/* sub_001A0B0C(heap, flags, size) — the heap-alloc core. stdcall, ret 0xC. */
+void sub_001A0B0C(RecompCtx* c) {
+    REX_ENTER(0x001A0B0Cu);
+    c->eax = rex_heap_block(MEM32(c->esp + 12u));
+    c->esp += 4u + 12u;
+    REX_LEAVE();
+}
+
+/* sub_003437F3 — CRT malloc(size). __cdecl, arg at [esp+4], caller cleans. */
+void sub_003437F3(RecompCtx* c) {
+    REX_ENTER(0x003437F3u);
+    c->eax = rex_heap_block(MEM32(c->esp + 4u));
+    c->esp += 4u;
+    REX_LEAVE();
+}
+
 /* All pool methods land on sub_00211530 via [vtable+0x1ac]; the thin wrappers
  * differ only in argument shape. `size` is [esp+8] in every wrapper. */
 
