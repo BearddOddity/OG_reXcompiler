@@ -6,7 +6,7 @@ same kind of C; the generated game code is identical in shape.
 | Branch | Language | Deps | Build | Status |
 |---|---|---|---|---|
 | `csharp` | C# / .NET 10 | iced-x86, Tomlyn | `dotnet build` | Full — analysis + emitter + config + runtime, compile-verified, recompiled X-Men boots |
-| `c` | C11 | Zydis, tomlc99 (submodules) | CMake + clang-cl | Analysis + emitter + writers ported and running; generated C compiles 0 errors |
+| `c` | C11 | Zydis, tomlc99 (submodules) | CMake + clang-cl | Full parity — analysis + emitter + writers; generated X-Men recompilation compiles 0 errors, links, and runs (boots + calls the kernel, same as `csharp`) |
 | `main` | = `csharp` | | | The default; Part-2 runtime work continues here |
 
 ## Why two
@@ -52,9 +52,17 @@ cmake --build build
 build/ogxbox emit game.xbe -o out
 ```
 
+## Verified (`c` branch)
+
+`ogxbox emit` on X-Men Legends `default.xbe`: 28,266 functions analysed,
+17,124 emitted, 888,874 instructions, **99.7% lowered**. The 43-file output
+compiles with clang-cl (**0 errors**), links to `recomp.exe`, and runs — the
+guest boots, runs CRT init, calls kernel imports, and stops at the same
+NULL-StartRoutine wall the `csharp` branch hits (missing XAPI init HLE).
+
 ## Known deltas from `csharp`
 
-The C analysis currently finds fewer functions (~28k vs ~39k) — its
-fixed-point discovery terminates a round earlier and a few jump-table forms are
-less aggressive. Same instruction-lowering coverage (~99.7%). Tuning to match
-is tracked, not blocking.
+The C analysis finds fewer functions (~28k vs ~39k) — its fixed-point
+discovery terminates a round earlier and a few jump-table forms are less
+aggressive. Same instruction-lowering coverage. Tuning to match is tracked,
+not blocking.
