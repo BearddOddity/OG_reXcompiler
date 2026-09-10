@@ -44,21 +44,43 @@ hand-built starter kernel on `main`.
 | `src/system/` `IGraphicsSystem`/`IAudioSystem`/`IInputSystem` | **stub** first (nop backends — the DI already allows this), then D3D8-HLE / DirectSound / OG gamepad |
 | `src/kernel/xboxkrnl` (not vendored yet) | **rewrite** — OG xboxkrnl ordinals + signatures |
 
-## Build order
+## Part 1 decision (2026-09-10): port, don't re-derive
 
-1. `third_party/` deps + `vendor/rexglue/include` + `src/x86/x86_instruction`
-   → get `function_graph.cpp` + `vtable_scanner` + `sig_scanner` + `config`
-   compiling as a `rexcodegen` library.
-2. `src/x86/function_scanner_x86.cpp` (from the `c` branch) → the phases run.
-3. A CLI (`ogxbox`) → analysis pipeline against an XBE.
-4. `instruction_dispatch` + `builders` x86 rewrite → codegen output.
-5. `src/system/` link (stub graphics/audio) → the runtime framework builds.
-6. XBE loader, OG xboxkrnl HLE → a recompiled title links + boots.
+The original plan was to swap ReXGlue's PPC `function_scanner.cpp` (2070 lines),
+`phase_*.cpp`, and `emitCpp` for x86 equivalents in place. That is ~8k lines of
+careful adaptation to re-solve block discovery, jump-table detection, the 6-phase
+fixed point, and x86-to-C lowering — all of which the `c` branch already solved
+for x86, compile- and boot-verified.
+
+So Part 1 on this branch **is the `c` branch's recompiler**, brought into the
+`cpp` tree verbatim (`src/*.c`, `runtime/*`, `tomlc99`) and built by this CMake as
+the `ogxbox` executable. It analyses X-Men Legends to 28,266 functions / 888,874
+instructions / 99.7% lowered, emits 43 C files that compile, link, and boot to the
+same NULL-`PsCreateSystemThreadEx`-StartRoutine wall as the other two branches
+(missing init HLE — a Part 2 concern).
+
+`rexcodegen.lib` (ReXGlue's own `function_graph` + RTTI/sig scanners + TOML config,
+compiled against a Zydis-backed `x86::Instruction`) still builds alongside it. It
+is the bridge object for Part 2: the `cpp` branch's real reason to exist is
+ReXGlue's `system/` + `filesystem/` + `rexglue/` runtime framework, and that
+integration will lean on ReXGlue's graph model rather than the `c` port's.
+
+## Build order (revised)
+
+1. [DONE] `third_party/` deps + `vendor/rexglue/include` → `rexcodegen.lib`
+   (`function_graph` + `vtable_scanner` + `sig_scanner` + `config` +
+   `codegen_flags`) compiling against `x86::Instruction`.
+2. [DONE] `c`-branch `src/*.c` + `runtime/*` + `tomlc99` in-tree → `ogxbox`
+   executable: XBE → analysis → C emit, verified against X-Men Legends.
+3. `src/system/` link (stub graphics/audio/input backends) → ReXGlue's runtime
+   framework builds on this branch.
+4. XBE loader for `src/system/` (replaces the XEX/ELF module loaders).
+5. OG xboxkrnl HLE against ReXGlue's `FunctionDispatcher` / `ExportResolver` /
+   `KernelState` / `ObjectTable` → a recompiled title links + boots past the
+   init-HLE wall.
 
 ## Status
 
-Step 1 done. `rexcodegen.lib` compiles from ReXGlue's own source (function_graph,
-vtable_scanner, sig_scanner, config, codegen_flags) against a Zydis-backed
-`x86::Instruction`. Deps wired (fmt, toml++, inja, nlohmann/json, xxHash, zydis,
-spdlog; C++23; clang-cl). `emitCpp` stubbed, `function_scanner` + phases +
-decoder + runtime still to do.
+Part 1 done and verified end to end (see decision above). Both `rexcodegen.lib`
+and `ogxbox.exe` build with clang-cl / C++23 / C11. Next: Part 2 — wire
+ReXGlue's `system/` runtime (steps 3-5).
