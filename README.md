@@ -51,7 +51,22 @@ ogxbox emit    <game.xbe> -o out [--config title.toml]   # + the C recompilation
 `emit` produces a `cmake`-buildable tree: `recomp_*.c`, `recomp_decls.h`,
 `recomp_dispatch.c`, `recomp_kthunks.c`, `recomp_imports.c`,
 `recomp_image.{c,bin}`, `ogxbox_{runtime,kernel,main}.c`, `ogxbox_runtime.h`,
-`CMakeLists.txt`. `recomp_image.bin` must sit next to the built executable.
+`CMakeLists.txt` and the full runtime + kernel tree. `recomp_image.bin` must
+sit next to the built executable.
+
+### Inner loop — `scripts/ogx.ps1`
+
+```
+pwsh scripts/ogx.ps1 tool                     # build the recompiler
+pwsh scripts/ogx.ps1 emit  -Config configs/xmen-legends.toml -Out C:\tmp\x
+pwsh scripts/ogx.ps1 build -Out C:\tmp\x -Trace
+pwsh scripts/ogx.ps1 run   -Out C:\tmp\x -Filter 'guest calls|ACCESS'
+pwsh scripts/ogx.ps1 cycle -Trace            # all four, defaults to the X-Men xbe
+```
+
+VS / LLVM / CMake are auto-detected; `-Trace` adds `-DREX_TRACE`. `run` starts
+`recomp.exe` under a `-Timeout` (default 25 s), kills it, and prints the
+filtered stderr.
 
 Verified with clang-cl (LLVM 22) + VS BuildTools + Windows SDK: the full X-Men
 Legends recompilation (18.7k functions, 935k instructions) compiles with 0
