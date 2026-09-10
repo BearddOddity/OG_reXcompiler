@@ -122,8 +122,12 @@ code from the X-Men recomp):
 ### Step status
 
 - [x] vendor kernel + platform sources
-- [ ] `runtime/kernel/` compiles as a static lib (fix include paths, drop the
-      POSIX `#else` branches' headers where clang-cl chokes)
+- [x] `runtime/kernel/` compiles — all 17 files, 0 errors, clang-cl, with
+      `-I runtime -I runtime/kernel` (include root is `runtime/`, so `kernel.h`'s
+      `#include "platform/xbox_winnt.h"` resolves). Windows branches are clean;
+      no POSIX-header trouble.
 - [ ] `xbox_memory_layout.c` wired as the RAM owner; `MEM*` re-pointed
-- [ ] `kernel_bridge.c` → `recomp_kbridge.c`, `__imp__*` exported
+- [ ] `kernel_bridge.c` → `recomp_kbridge.c`, `__imp__*` exported (the one file
+      still on the old global-register ABI; `g_esp`/`g_eax`/`recomp_lookup` are
+      externs there, so it compiles standalone now, links after adaptation)
 - [ ] generated recomp builds against it and runs past the NULL-StartRoutine wall
