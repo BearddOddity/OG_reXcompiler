@@ -66,27 +66,70 @@ public static class CodegenWriter
         }
 
         File.WriteAllText(Path.Combine(outDir, "recomp_decls.h"), decls.ToString());
+        WriteDispatchTable(ctx, outDir, funcs);
+        WriteImportStubs(ctx, outDir);
         return stats;
+    }
+
+    private static void WriteDispatchTable(CodegenContext ctx, string outDir,
+                                           List<FunctionNode> funcs)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("/* generated — guest address -> function, sorted for binary search */");
+        sb.AppendLine("#include \"recomp_decls.h\"");
+        sb.AppendLine("typedef struct { unsigned int addr; void (*fn)(RecompCtx*); } RexDispatchEntry;");
+        sb.AppendLine("const RexDispatchEntry g_rex_dispatch[] = {");
+        foreach (var fn in funcs.OrderBy(f => f.Base))
+            sb.Append("  { 0x").Append(fn.Base.ToString("X8")).Append("u, ").Append(fn.Name).AppendLine(" },");
+        sb.AppendLine("};");
+        sb.Append("const unsigned int g_rex_dispatch_count = ")
+          .Append(funcs.Count).AppendLine(";");
+        File.WriteAllText(Path.Combine(outDir, "recomp_dispatch.c"), sb.ToString());
+    }
+
+    private static void WriteImportStubs(CodegenContext ctx, string outDir)
+    {
+        var imports = ctx.Graph.Functions.Values
+            .Where(n => n.IsImport)
+            .Select(n => n.Name)
+            .Distinct()
+            .OrderBy(s => s)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("/* generated — weak kernel-import stubs; a port overrides these */");
+        sb.AppendLine("#include \"ogxbox_runtime.h\"");
+        foreach (var name in imports)
+        {
+            sb.Append("#if defined(__GNUC__) || defined(__clang__)\n__attribute__((weak))\n#endif\n");
+            sb.Append("void ").Append(name).Append("(RecompCtx* c) { (void)c; rex_unimplemented(\"")
+              .Append(name).AppendLine("\", 0); }");
+        }
+        File.WriteAllText(Path.Combine(outDir, "recomp_imports.c"), sb.ToString());
+
+        // declare them in the shared header too
+        var d = Path.Combine(outDir, "recomp_decls.h");
+        File.AppendAllText(d, "\n/* imports */\n" +
+            string.Join("\n", imports.Select(n => $"void {n}(RecompCtx* c);")) + "\n");
     }
 
     private static void WriteRuntimeHeader(string outDir)
     {
         // The header ships as an embedded resource OR sits next to the assembly.
         var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
-        foreach (var candidate in new[]
-                 {
-                     Path.Combine(asmDir, "ogxbox_runtime.h"),
-                     Path.Combine(asmDir, "..", "..", "..", "..", "..", "runtime", "ogxbox_runtime.h"),
-                 })
+        foreach (var name in new[] { "ogxbox_runtime.h", "ogxbox_runtime.c" })
         {
-            if (File.Exists(candidate))
+            string? src = new[]
             {
-                File.Copy(candidate, Path.Combine(outDir, "ogxbox_runtime.h"), overwrite: true);
-                return;
-            }
+                Path.Combine(asmDir, name),
+                Path.Combine(asmDir, "..", "..", "..", "..", "..", "runtime", name),
+            }.FirstOrDefault(File.Exists);
+
+            if (src is not null)
+                File.Copy(src, Path.Combine(outDir, name), overwrite: true);
+            else if (name.EndsWith(".h"))
+                File.WriteAllText(Path.Combine(outDir, name),
+                    "#error copy runtime/ogxbox_runtime.h from the SDK next to this file\n");
         }
-        // Not found — leave a stub note so the build error is obvious.
-        File.WriteAllText(Path.Combine(outDir, "ogxbox_runtime.h"),
-            "#error copy runtime/ogxbox_runtime.h from the SDK next to this file\n");
     }
 }

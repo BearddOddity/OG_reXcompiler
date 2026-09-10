@@ -17,6 +17,8 @@
   <ItemGroup>
     <Content Include="..\..\runtime\ogxbox_runtime.h" Link="ogxbox_runtime.h"
              CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\runtime\ogxbox_runtime.c" Link="ogxbox_runtime.c"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
