@@ -35,7 +35,12 @@ static void (*rex_lookup(uint32_t target))(RecompCtx*) {
     return 0;
 }
 
+void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal);  /* recomp_kthunks.c */
+
 void rex_dispatch(RecompCtx* c, uint32_t target) {
+    /* An unfixed-up kernel thunk still holds 0x80000000 | ordinal. */
+    if (target & 0x80000000u) { rex_kernel_dispatch(c, target & 0x7FFFFFFFu); return; }
+
     void (*fn)(RecompCtx*) = rex_lookup(target);
     if (fn) { fn(c); return; }
     rex_unimplemented("indirect target", target);

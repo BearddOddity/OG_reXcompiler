@@ -28,12 +28,15 @@ public static class ImageWriter
                 blob.Write(xbe.RawData, (int)s.RawAddress, (int)s.RawSize);
         }
 
-        uint ramSize = RoundUp(xbe.BaseAddress + xbe.ImageSize + 0x10000, 0x1000);
-        // A generous default guest stack just below 0x80000000 (OG Xbox user space).
-        uint initialEsp = 0x7FFF0000;
+        // Flat guest RAM: 64 MB (retail Xbox). Must cover image + heap + stack.
+        // The stack lives high inside that window; the pool allocator (kernel)
+        // carves the top 8 MB, so keep esp below it.
+        uint ramSize = 64u * 1024 * 1024;
+        uint initialEsp = 0x03700000;   // ~55 MB — below image top only if image < 55 MB (it is)
 
         var sb = new StringBuilder();
         sb.AppendLine("/* generated — XBE image map. rex_load_image() fills guest RAM. */");
+        sb.AppendLine("#define _CRT_SECURE_NO_WARNINGS 1");
         sb.AppendLine("#include \"ogxbox_runtime.h\"");
         sb.AppendLine("#include <stdio.h>");
         sb.AppendLine();

@@ -31,11 +31,20 @@ public static class CodegenWriter
         if (image is not null)
             ImageWriter.Write(image, outDir);
 
-        var emitter = new CEmitter(ctx.Decoded, a => ctx.Graph.GetFunction(a)?.Name);
         var funcs = ctx.Graph.SealedFunctions
             .Where(n => !n.IsImport && n.Blocks.Count > 0)
             .OrderBy(n => n.Base)
             .ToList();
+
+        // Names for call/jump targets: emittable functions only. An import keeps
+        // its __imp__ name; anything else the emitter routes through rex_dispatch.
+        var emittable = new HashSet<uint>(funcs.Select(f => f.Base));
+        var emitter = new CEmitter(ctx.Decoded, a =>
+        {
+            if (emittable.Contains(a)) return ctx.Graph.GetFunction(a)!.Name;
+            var imp = ctx.Graph.GetFunction(a);
+            return imp is { IsImport: true } ? imp.Name : null;
+        });
 
         WriteRuntimeHeader(outDir);
 
@@ -72,8 +81,42 @@ public static class CodegenWriter
         File.WriteAllText(Path.Combine(outDir, "recomp_decls.h"), decls.ToString());
         WriteDispatchTable(ctx, outDir, funcs);
         WriteImportStubs(ctx, outDir);
+        if (image is not null) WriteKernelThunks(image, outDir);
         WriteCMake(outDir, fileIdx);
         return stats;
+    }
+
+    // The guest reads MEM32(thunk_va) = 0x80000000 | ordinal and calls through
+    // it; rex_dispatch sees the high bit and routes here.
+    private static void WriteKernelThunks(Binary.Xbe xbe, string outDir)
+    {
+        var byOrdinal = xbe.KernelImports
+            .GroupBy(k => k.Ordinal)
+            .Select(g => g.First())
+            .OrderBy(k => k.Ordinal)
+            .ToList();
+
+        var sb = new StringBuilder();
+        sb.AppendLine("/* generated — xboxkrnl ordinal -> __imp__ dispatch */");
+        sb.AppendLine("#include \"recomp_decls.h\"");
+        sb.AppendLine("void rex_unimplemented(const char* what, unsigned int addr);");
+        sb.AppendLine();
+        sb.AppendLine("void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal) {");
+        sb.AppendLine("    switch (ordinal) {");
+        foreach (var k in byOrdinal)
+            sb.AppendLine($"    case {k.Ordinal}: __imp__{Sanitize(k.Name)}(c); return;");
+        sb.AppendLine("    default: rex_unimplemented(\"kernel ordinal\", 0x80000000u | ordinal); return;");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        File.WriteAllText(Path.Combine(outDir, "recomp_kthunks.c"), sb.ToString());
+    }
+
+    private static string Sanitize(string name)
+    {
+        var sb = new StringBuilder(name.Length);
+        foreach (char ch in name)
+            sb.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+        return sb.ToString();
     }
 
     private static void WriteCMake(string outDir, int cFileCount)
@@ -84,7 +127,7 @@ public static class CodegenWriter
         sb.AppendLine("set(CMAKE_C_STANDARD 11)");
         sb.AppendLine("add_executable(recomp");
         sb.AppendLine("  ogxbox_main.c ogxbox_runtime.c ogxbox_kernel.c");
-        sb.AppendLine("  recomp_dispatch.c recomp_imports.c recomp_image.c");
+        sb.AppendLine("  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c");
         for (int i = 0; i < cFileCount; i++)
             sb.AppendLine($"  recomp_{i:D4}.c");
         sb.AppendLine(")");

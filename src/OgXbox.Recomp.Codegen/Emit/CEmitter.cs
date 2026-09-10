@@ -43,6 +43,34 @@ public sealed class CEmitter
         foreach (var jt in node.JumpTables)
             foreach (var t in jt.Targets) labels.Add(t);
 
+        // Every instruction start inside this function's blocks — a `goto` may
+        // only target one of these (label emitted at that exact address).
+        var insnStarts = new HashSet<uint>();
+        foreach (var block in node.Blocks)
+        {
+            uint a = block.Base;
+            while (a < block.End)
+            {
+                insnStarts.Add(a);
+                if (!_decoded.TryDecodeRaw(a, out var di) || di.Length == 0) { a++; continue; }
+                a += (uint)di.Length;
+            }
+        }
+        // Pre-scan for direct-branch targets that land on an instruction start;
+        // those need a label even when discovery didn't record one.
+        foreach (uint a in insnStarts)
+        {
+            var di = _decoded.DecodeAt(a);
+            if (di is null || di.Target == 0) continue;
+            if (di.Flow is InsnFlow.ConditionalBranch or InsnFlow.UnconditionalBranch
+                && insnStarts.Contains(di.Target))
+                labels.Add(di.Target);
+        }
+
+        // The set of addresses that will actually get a `loc_X:` — the only
+        // legal `goto` destinations.
+        var emitted = new HashSet<uint>(labels.Where(insnStarts.Contains));
+
         int insnCount = 0, unimpl = 0;
         var unimplMnemonics = new List<string>();
 
@@ -51,7 +79,7 @@ public sealed class CEmitter
             uint addr = block.Base;
             while (addr < block.End)
             {
-                if (labels.Contains(addr))
+                if (emitted.Contains(addr))
                     body.Append("loc_").Append(addr.ToString("X", CultureInfo.InvariantCulture)).Append(":;\n");
 
                 if (!_decoded.TryDecodeRaw(addr, out var insn) || insn.Length == 0)
@@ -62,7 +90,7 @@ public sealed class CEmitter
                 }
 
                 body.Append("\t/* ").Append(insn.ToString()).Append(" */\n");
-                bool ok = EmitOne(body, insn, addr, node, labels);
+                bool ok = EmitOne(body, insn, addr, node, emitted);
                 insnCount++;
                 if (!ok)
                 {
@@ -90,7 +118,7 @@ public sealed class CEmitter
     //=====================================================================
 
     private bool EmitOne(StringBuilder b, in Instruction insn, uint addr,
-                         FunctionNode node, HashSet<uint> labels)
+                         FunctionNode node, HashSet<uint> emitted)
     {
         switch (insn.Mnemonic)
         {
@@ -269,10 +297,10 @@ public sealed class CEmitter
             case Mnemonic.Ret or Mnemonic.Retf:
                 Line(b, "return;");
                 return true;
-            case Mnemonic.Jmp: return Jmp(b, insn, addr, node, labels);
+            case Mnemonic.Jmp: return Jmp(b, insn, addr, node, emitted);
 
             default:
-                if (IsJcc(insn.Mnemonic)) return Jcc(b, insn, addr, labels);
+                if (IsJcc(insn.Mnemonic)) return Jcc(b, insn, addr, emitted);
                 if (IsSetcc(insn.Mnemonic))
                 {
                     Line(b, W(insn, 0, $"({Cond(insn.Mnemonic)}) ? 1u : 0u", addr));
@@ -583,8 +611,10 @@ public sealed class CEmitter
         if (insn.Op0Kind is OpKind.NearBranch16 or OpKind.NearBranch32 or OpKind.NearBranch64)
         {
             uint target = (uint)insn.NearBranchTarget;
-            string name = _nameOf(target) ?? $"sub_{target:X8}";
-            Line(b, $"{name}(c);");
+            if (_nameOf(target) is { } name)
+                Line(b, $"{name}(c);");
+            else
+                Line(b, $"rex_dispatch(c, 0x{target:X8}u);");
         }
         else
         {
@@ -593,12 +623,12 @@ public sealed class CEmitter
         return true;
     }
 
-    private bool Jmp(StringBuilder b, in Instruction insn, uint addr, FunctionNode node, HashSet<uint> labels)
+    private bool Jmp(StringBuilder b, in Instruction insn, uint addr, FunctionNode node, HashSet<uint> emitted)
     {
         if (insn.Op0Kind is OpKind.NearBranch16 or OpKind.NearBranch32 or OpKind.NearBranch64)
         {
             uint target = (uint)insn.NearBranchTarget;
-            if (labels.Contains(target) || node.ContainsAddress(target))
+            if (emitted.Contains(target))
             {
                 Line(b, $"goto loc_{target:X};");
             }
@@ -608,9 +638,8 @@ public sealed class CEmitter
             }
             else
             {
-                // jmp into another function's body (or an unregistered address):
-                // route through the runtime dispatcher, which loudly fails if
-                // 0xTARGET isn't a registered entry point.
+                // jmp into another function's body / an unregistered address:
+                // route through the runtime dispatcher (loud fail if unmapped).
                 Line(b, $"rex_dispatch(c, 0x{target:X8}u); return; /* mid-function tail jump */");
             }
         }
@@ -621,10 +650,13 @@ public sealed class CEmitter
         return true;
     }
 
-    private bool Jcc(StringBuilder b, in Instruction insn, uint addr, HashSet<uint> labels)
+    private bool Jcc(StringBuilder b, in Instruction insn, uint addr, HashSet<uint> emitted)
     {
         uint target = (uint)insn.NearBranchTarget;
-        Line(b, $"if ({Cond(insn.Mnemonic)}) goto loc_{target:X};");
+        if (emitted.Contains(target))
+            Line(b, $"if ({Cond(insn.Mnemonic)}) goto loc_{target:X};");
+        else
+            Line(b, $"if ({Cond(insn.Mnemonic)}) {{ rex_dispatch(c, 0x{target:X8}u); return; }}");
         return true;
     }
 
