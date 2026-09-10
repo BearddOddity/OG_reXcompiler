@@ -129,6 +129,7 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     RecompCtx ctx; memset(&ctx, 0, sizeof ctx);
     ctx.esp = a.esp;
     ctx.fpu_cw = 0x037F;
+    rex_set_fs_base(0x00770000u);   /* shared TIB — per-thread when real threads land */
     /* push args right-to-left, then a return-address slot — the generated
      * entry reads its args at [esp+4] like any function our `call` reaches. */
     if (a.nargs >= 2) PUSH32(&ctx, a.a1);

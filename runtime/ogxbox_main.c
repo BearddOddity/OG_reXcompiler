@@ -24,9 +24,11 @@ int main(int argc, char** argv) {
 #ifdef REX_TRACE
         extern volatile uint32_t g_rex_last_enter;
         extern volatile unsigned long g_rex_enter_count;
+        extern void rex_global_backtrace(void);
         unsigned long n = g_rex_enter_count;
         fprintf(stderr, "[ogxbox] +%02.1fs  guest calls %lu (+%lu)  last @ 0x%08X\n",
                 i * 0.5, n, n - last_count, g_rex_last_enter);
+        if (n == last_count && i > 2 && (i % 6) == 0) rex_global_backtrace();
         last_count = n;
 #endif
     }

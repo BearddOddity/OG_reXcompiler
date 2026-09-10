@@ -67,9 +67,11 @@ static void sub_0019F196(RecompCtx* c) {
  * *inside* the guest, so they are skipped until the TIB emulation lands.
  * 0x1A237D is the one that matters and it is a properly detected function. */
 static void sub_001A1C23(RecompCtx* c) {
-    /* mcall(c, 0x001A3639u); mcall(c, 0x001A23F3u);
-       mcall(c, 0x001A35ACu); mcall(c, 0x001A3554u);
-       mcall_cdecl3(c, 0x00011E40u, 0, 0, 0);   -- skipped, need TIB */
+    mcall(c, 0x001A3639u);
+    mcall(c, 0x001A23F3u);
+    mcall(c, 0x001A35ACu);
+    mcall(c, 0x001A3554u);
+    mcall_cdecl3(c, 0x00011E40u, 0, 0, 0);
     mcall_cdecl3(c, 0x001A237Du, 0, 1, 1);
     c->eax = 0;
     c->esp += 4u;                     /* pop our own return slot */

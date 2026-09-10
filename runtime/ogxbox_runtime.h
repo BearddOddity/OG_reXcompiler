@@ -82,9 +82,11 @@ static inline void rex_fcom(RecompCtx* c, double a, double b) {
 static inline int __builtin_parity(unsigned x) { x ^= x >> 16; x ^= x >> 8; x ^= x >> 4; x ^= x >> 2; x ^= x >> 1; return x & 1; }
 #endif
 
-/* fs:/gs: segment-relative access. On the Xbox fs points at the thread block;
- * a port wires this to its TIB emulation. Default: treat as flat. */
-static inline uint32_t rex_seg(int seg, uint32_t off) { (void)seg; return off; }
+/* fs:/gs: segment-relative access. fs points at the per-thread block (TIB);
+ * rex_seg adds the calling thread's fs base (set by rex_boot / the thread
+ * trampoline via rex_set_fs_base). gs is unused on the Xbox. */
+uint32_t rex_seg(int seg, uint32_t off);
+void     rex_set_fs_base(uint32_t va);
 #define FS 0
 #define GS 1
 

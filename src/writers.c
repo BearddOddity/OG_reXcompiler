@@ -211,7 +211,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
 
     /* runtime headers/sources */
     const char* rt[] = { "ogxbox_runtime.h", "ogxbox_runtime.c", "ogxbox_trace.c",
-                         "ogxbox_kernel.c", "ogxbox_thunkfix.c", "recomp_manual.c", "ogxbox_main.c", NULL };
+                         "ogxbox_kernel.c", "ogxbox_thunkfix.c", "ogxbox_tib.c", "recomp_manual.c", "ogxbox_main.c", NULL };
     for (int i = 0; rt[i]; i++) copy_file(runtime_dir, rt[i], out_dir);
 
     /* decls header */
@@ -292,7 +292,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
         FILE* cm = open_out(out_dir, "CMakeLists.txt");
         fprintf(cm, "cmake_minimum_required(VERSION 3.16)\nproject(recomp C)\nset(CMAKE_C_STANDARD 11)\n");
         fprintf(cm, "add_executable(recomp\n"
-                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_thunkfix.c recomp_manual.c\n"
+                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_thunkfix.c ogxbox_tib.c recomp_manual.c\n"
                     "  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c\n");
         for (int k = 0; k < file_idx; k++) fprintf(cm, "  recomp_%04d.c\n", k);
         fprintf(cm, ")\n# add -DREX_TRACE for a guest backtrace on unresolved calls\n"

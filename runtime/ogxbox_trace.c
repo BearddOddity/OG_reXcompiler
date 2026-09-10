@@ -20,15 +20,38 @@ static _Thread_local int      t_top;   /* next free slot */
 volatile uint32_t      g_rex_last_enter;
 volatile unsigned long  g_rex_enter_count;
 
+/* Shallowest 24 frames of whichever thread called rex_enter last, mirrored to a
+ * global so the host watchdog can print the spin stack without a debugger.
+ * Racy across threads; fine during single-threaded bring-up. */
+#define REX_GLOBAL_BT 24
+volatile uint32_t      g_rex_bt[REX_GLOBAL_BT];
+volatile int           g_rex_bt_depth;
+
+static void mirror_bt(void) {
+    int d = t_top < REX_GLOBAL_BT ? t_top : REX_GLOBAL_BT;
+    for (int i = 0; i < d; i++) g_rex_bt[i] = t_stack[t_top - d + i];
+    g_rex_bt_depth = t_top;
+}
+
 void rex_enter(uint32_t guest_addr) {
     if (t_top < REX_TRACE_DEPTH) t_stack[t_top] = guest_addr;
     t_top++;
     g_rex_last_enter = guest_addr;
     g_rex_enter_count++;
+    mirror_bt();
 }
 
 void rex_leave(void) {
     if (t_top > 0) t_top--;
+    mirror_bt();
+}
+
+void rex_global_backtrace(void) {
+    int d = g_rex_bt_depth;
+    fprintf(stderr, "[ogxbox] spin stack (%d frames, deepest last):\n", d);
+    int shown = d < REX_GLOBAL_BT ? d : REX_GLOBAL_BT;
+    for (int i = 0; i < shown; i++)
+        fprintf(stderr, "    sub_%08X\n", g_rex_bt[i]);
 }
 
 /* recomp_dispatch.c — RexDispatchEntry is in ogxbox_runtime.h */

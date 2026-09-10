@@ -96,14 +96,32 @@ void rex_dispatch(RecompCtx* c, uint32_t target) {
     rex_unimplemented("indirect target", target);
 }
 
+/* fs: base — per thread. The main thread's is set in rex_boot; each guest
+ * thread's in the trampoline. */
+static _Thread_local uint32_t t_fs_base;
+void rex_set_fs_base(uint32_t va) { t_fs_base = va; }
+uint32_t rex_seg(int seg, uint32_t off) { return (seg == FS ? t_fs_base : 0u) + off; }
+
 /* Generated (recomp_image.c). */
 extern const unsigned int g_rex_image_base, g_rex_ram_size, g_rex_entry_va, g_rex_initial_esp;
 int rex_load_image(const char* bin_path);
+uint32_t ogxbox_tib_setup(void);       /* ogxbox_tib.c — returns the fs base VA */
+void     ogxbox_kernel_page_setup(void);
 
 /* Allocate guest RAM, map the XBE image, run the entry point. */
 int rex_boot(const char* image_bin_path) {
-    g_guest_ram = (uint8_t*)calloc(1, g_rex_ram_size);
+    /* Reserve a 2 GB window so kernel-space addresses (0x8001xxxx — the Xbox
+     * kernel image RenderWare pokes for cache sizing) land inside it; commit
+     * the 64 MB of RAM up front. Guest VA == host offset from the base. */
+    const uint32_t KWIN = 0x80020000u;
+    g_guest_ram = (uint8_t*)VirtualAlloc(NULL, KWIN, MEM_RESERVE, PAGE_NOACCESS);
     if (!g_guest_ram) return -1;
+    /* Commit all 64 MB including the low page: Xbox code legitimately reads
+     * KPCR fields near VA 0, and a NULL-derived read should see zero rather
+     * than fault (X-Men's layout does the same — a soft write-watch is the
+     * right null trap, not PAGE_NOACCESS). */
+    if (!VirtualAlloc(g_guest_ram, g_rex_ram_size, MEM_COMMIT, PAGE_READWRITE))
+        return -1;
     g_guest_ram_size = g_rex_ram_size;
 
     int rc = rex_load_image(image_bin_path);
@@ -113,6 +131,8 @@ int rex_boot(const char* image_bin_path) {
      * (va + offset); our guest RAM is a flat host buffer, so offset == base. */
     g_xbox_mem_offset = (ptrdiff_t)(uintptr_t)g_guest_ram;
 
+    ogxbox_kernel_page_setup();
+    rex_set_fs_base(ogxbox_tib_setup());
     ogxbox_thunkfix_run();
 
     void (*entry)(RecompCtx*) = rex_lookup(g_rex_entry_va);
