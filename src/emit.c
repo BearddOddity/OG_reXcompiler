@@ -301,7 +301,8 @@ static int x87(E* e, RI* r, uint32_t addr) {
             linef(e, "MEM16(%s) = c->fpu_cw;", a); return 1; }
         case ZYDIS_MNEMONIC_FLDCW: { char a[288]; op_lea_addr_at(&r->ins, r->ops, 0, a, sizeof a);
             linef(e, "c->fpu_cw = (uint16_t)MEM16(%s);", a); return 1; }
-        case ZYDIS_MNEMONIC_FNINIT: return 1;
+        case ZYDIS_MNEMONIC_FNINIT: line(e, "c->fpu_cw = 0x037F; c->fpu_sw = 0; c->fpu_top = 0;"); return 1;
+        case ZYDIS_MNEMONIC_FNCLEX: line(e, "c->fpu_sw &= (uint16_t)~0x80FFu;"); return 1;  /* clear exception + busy bits */
         default: break;
     }
     linef(e, "REX_UNIMPLEMENTED(\"%s\", 0x%08X);", ZydisMnemonicGetString(m), addr);

@@ -209,6 +209,48 @@ void __imp__NtWaitForSingleObject(RecompCtx* c) {
     ret_stdcall(c, 0, 3);
 }
 
+/* --- DPC / timer / HAL (init-time, mostly no-ops) --------------------- */
+void __imp__KeInitializeDpc(RecompCtx* c) {          /* (dpc, routine, context) */
+    uint32_t dpc = arg(c,1);
+    if (dpc) { memset(XBOX_PTR(dpc), 0, 32); MEM16(dpc) = 0x13;
+               MEM32(dpc+12) = arg(c,2); MEM32(dpc+16) = arg(c,3); }
+    ret_stdcall(c, 0, 3);
+}
+void __imp__KeInitializeTimerEx(RecompCtx* c) {      /* (timer, type) */
+    uint32_t t = arg(c,1);
+    if (t) { memset(XBOX_PTR(t), 0, 40); MEM16(t) = (uint16_t)(0x08 + (arg(c,2) & 1)); }
+    ret_stdcall(c, 0, 2);
+}
+void __imp__KeSetTimer(RecompCtx* c)   { ret_stdcall(c, 0, 4); }   /* FALSE = not previously set */
+void __imp__KeCancelTimer(RecompCtx* c){ ret_stdcall(c, 0, 1); }
+void __imp__HalRegisterShutdownNotification(RecompCtx* c) { ret_stdcall(c, 0, 2); }
+void __imp__RtlNtStatusToDosError(RecompCtx* c) {
+    uint32_t s = arg(c,1), e;
+    switch (s) { case 0: e = 0; break; case 0xC0000034u: e = 2; break;
+                 case 0xC000003Au: e = 3; break; case 0xC0000022u: e = 5; break;
+                 case 0xC0000008u: e = 6; break; case 0xC000000Du: e = 87; break;
+                 default: e = 317; }
+    ret_stdcall(c, e, 1);
+}
+/* ExQueryNonVolatileSetting(ValueIndex, Type*, Value*, Length, ResultLength*)
+ * EEPROM settings. Hand back zeros (English, NTSC, default clock) so the
+ * engine takes its defaults. */
+void __imp__ExQueryNonVolatileSetting(RecompCtx* c) {
+    uint32_t ptype = arg(c,2), pval = arg(c,3), presult = arg(c,5);
+    if (ptype) MEM32(ptype) = 4;   /* REG_DWORD */
+    if (pval)  MEM32(pval) = 0;
+    if (presult) MEM32(presult) = 4;
+    ret_stdcall(c, 0, 5);
+}
+
+/* --- files: stubbed until the VFS lands (Phase B) --------------------- */
+void __imp__NtOpenFile(RecompCtx* c)  { wr32(arg(c,1), 0); ret_stdcall(c, 0xC0000034u /* NAME_NOT_FOUND */, 6); }
+void __imp__NtCreateFile(RecompCtx* c){ wr32(arg(c,1), 0); ret_stdcall(c, 0xC0000034u, 11); }
+void __imp__NtReadFile(RecompCtx* c)  { ret_stdcall(c, 0xC0000011u /* END_OF_FILE */, 9); }
+void __imp__NtQueryVolumeInformationFile(RecompCtx* c) { ret_stdcall(c, 0xC0000034u, 5); }
+void __imp__NtQueryInformationFile(RecompCtx* c)       { ret_stdcall(c, 0xC0000034u, 5); }
+void __imp__NtQueryFullAttributesFile(RecompCtx* c)    { ret_stdcall(c, 0xC0000034u, 2); }
+
 /* --- object / symbolic link ------------------------------------------- */
 /* NtOpenSymbolicLinkObject(PHANDLE, POBJECT_ATTRIBUTES) — the game resolves
  * device paths (\Device\CdRom0, \Device\Harddisk0\Partition1, ...) this way
