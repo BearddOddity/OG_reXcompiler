@@ -15,9 +15,16 @@
 static _Thread_local uint32_t t_stack[REX_TRACE_DEPTH];
 static _Thread_local int      t_top;   /* next free slot */
 
+/* Last guest address any thread entered + a monotonically increasing counter —
+ * a watchdog samples these to tell "making progress" from "spinning/blocked". */
+volatile uint32_t      g_rex_last_enter;
+volatile unsigned long  g_rex_enter_count;
+
 void rex_enter(uint32_t guest_addr) {
     if (t_top < REX_TRACE_DEPTH) t_stack[t_top] = guest_addr;
     t_top++;
+    g_rex_last_enter = guest_addr;
+    g_rex_enter_count++;
 }
 
 void rex_leave(void) {

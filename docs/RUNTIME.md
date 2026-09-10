@@ -175,3 +175,41 @@ Part 2 iterates fastest on the `c` branch: self-contained C, the emitter is
 `emit.c` (directly fixable), and it already produces byte-identical analysis to
 `csharp`. Moving Phase A there — kernel vendor + these emitter fixes — and
 leaving `csharp`/`main` as the reference and `cpp` as the ReXGlue-reuse branch.
+
+---
+
+## Phase A progress (2026-09-10, `c` branch, commit 7c53a7f + diag)
+
+The calling-convention fix + thunk fixup + manual overrides get the recompiled
+X-Men Legends this far:
+
+```
+boot -> thunkfix (15 data exports patched, 115 function slots kept as ordinals)
+     -> XBE entry -> PsCreateSystemThreadEx(StartRoutine=0x1A1C23, SystemRoutine=0x19F196)
+     -> thread: sub_0019F196 (manual CRT trampoline) -> sub_001A1C23 (manual)
+     -> sub_001A237D (engine/device init, real code) -> ~10 calls deep
+     -> STUCK: tight poll loop, no further function entries, frozen at 0x0019DD85's
+        neighbourhood for 15 s (g_rex_enter_count flat at 10)
+```
+
+`sub_0019DD85` and `sub_001A1D5F` are thin wrappers around `NtClose` (ordinal
+187) and a sibling ordinal. The spin is in a caller a few frames up — a
+register/memory poll that never changes because nothing in the runtime signals
+it (another thread, a timer, a hardware/interrupt flag, or a kernel object our
+stub HLE doesn't actually wake).
+
+**Diagnostic added:** `-DREX_TRACE` now exports `g_rex_last_enter` /
+`g_rex_enter_count`; `ogxbox_main.c` samples them every 0.5 s so "running" vs
+"stuck" is visible without a debugger.
+
+### Next
+
+- A **poll-loop finder**: detect a backward branch executing many times with no
+  intervening `call`, dump the addresses/values it reads. (The X-Men recomp's
+  "software poll" instrument does exactly this.)
+- Likely fixes once located: a real object table so `NtWaitForSingleObject` /
+  `KeWaitForSingleObject` block and wake correctly; a monotonic
+  `KeQuerySystemTime` / interrupt-time source; the missing worker thread the
+  main thread is waiting on actually being spawned and run.
+- Then the CRT per-thread setup (`sub_001A3639` etc., currently skipped) needs
+  a minimal TIB so `fs:[0x28]` chains resolve.
