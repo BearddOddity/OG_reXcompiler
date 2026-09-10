@@ -141,8 +141,10 @@ void rex_unimplemented(const char* what, uint32_t addr);
 /* Indirect jump/tail dispatch — resolves a guest address to a generated fn. */
 void rex_dispatch(RecompCtx* c, uint32_t target);
 /* Indirect call — same, but a return slot is already pushed; an unresolved
- * target pops it so the caller's frame stays balanced. */
+ * target pops it (rex_icall_n also pops `argbytes` of stdcall/thiscall args)
+ * so the caller's frame stays balanced. */
 void rex_icall(RecompCtx* c, uint32_t target);
+void rex_icall_n(RecompCtx* c, uint32_t target, uint32_t argbytes);
 
 /* True if a generated (or manually overridden) function exists at addr. */
 int rex_has_fn(uint32_t addr);

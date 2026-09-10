@@ -500,9 +500,12 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
     int insn_count = 0;
     for (size_t bi = 0; bi < node->blocks.len; bi++) {
         uint32_t addr = blocks[bi].base, end = block_end(&blocks[bi]);
+        int pending_pushes = 0;   /* consecutive `push`es feeding the next call */
         while (addr < end) {
-            if (u32map_has(&e.emitted, addr))
+            if (u32map_has(&e.emitted, addr)) {
                 sb_addf(&e.b, "loc_%X:;\n", addr);
+                pending_pushes = 0;
+            }
 
             DecodedInsn di;
             RI r; r.addr = addr;
@@ -512,11 +515,13 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             if (!have_di || di.flow == FLOW_INVALID || di.length == 0) {
                 sb_addf(&e.b, "\t/* .byte @ 0x%08X */\n", addr);
                 addr++;
+                pending_pushes = 0;
                 continue;
             }
 
             sb_addf(&e.b, "\t/* %s */\n", di.text);
             insn_count++;
+            int is_push = have_raw && r.ins.mnemonic == ZYDIS_MNEMONIC_PUSH;
 
             if (di.flow == FLOW_INT3) { linef(&e, "REX_UNIMPLEMENTED(\"int3\", 0x%08X);", addr); }
             else if (di.flow == FLOW_CALL && di.target) {
@@ -540,8 +545,18 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             }
             else if (di.flow == FLOW_INDIRECT_CALL && have_raw) {
                 char t[256]; R(&r, 0, t, sizeof t);
+                /* On an unresolved target rex_icall must unwind the guest
+                 * stack. It always pops the return slot; it also pops the
+                 * pushed args when the callee is stdcall/thiscall (no
+                 * caller-side `add esp` after the call). */
+                uint32_t argbytes = 0;
+                DecodedInsn nxt;
+                int caller_cleans = db_decode_at(db, addr + di.length, &nxt) &&
+                    strstr(nxt.text, "add esp,") != NULL;
+                if (!caller_cleans) argbytes = (uint32_t)pending_pushes * 4u;
                 linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
-                linef(&e, "rex_icall(c, %s);", t);
+                if (argbytes) linef(&e, "rex_icall_n(c, %s, %uu);", t, argbytes);
+                else          linef(&e, "rex_icall(c, %s);", t);
             }
             else if (di.flow == FLOW_UNCONDITIONAL_BR && di.target) {
                 if (u32map_has(&e.emitted, di.target)) linef(&e, "goto loc_%X;", di.target);
@@ -569,6 +584,17 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
                 linef(&e, "REX_UNIMPLEMENTED(\"decode\", 0x%08X);", addr);
                 e.unimpl++;
             }
+
+            /* Track the run of `push`es feeding the next call. Keep counting
+             * across reg/ALU ops (thiscall computes `this`/args between
+             * pushes); reset on anything that breaks or consumes the run. */
+            if (is_push) pending_pushes++;
+            else if (di.flow != FLOW_NEXT ||
+                     (have_raw && (r.ins.mnemonic == ZYDIS_MNEMONIC_POP ||
+                                   r.ins.mnemonic == ZYDIS_MNEMONIC_PUSHFD ||
+                                   r.ins.mnemonic == ZYDIS_MNEMONIC_PUSHAD ||
+                                   (strstr(di.text, "esp,") && (di.text[0]=='a' || di.text[0]=='s' || di.text[0]=='m')))))
+                pending_pushes = 0;
 
             addr += di.length;
         }

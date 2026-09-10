@@ -145,14 +145,16 @@ static void rex_dispatch_fn(RecompCtx* c, uint32_t target, void (*fn)(RecompCtx*
  * site's frame stays balanced (a resolved callee's `ret` would have popped
  * it). Stack args a stdcall callee would also have popped still leak, but a
  * 4-byte slip is recoverable where an 8+-byte one corrupts the caller. */
-void rex_icall(RecompCtx* c, uint32_t target) {
+void rex_icall_n(RecompCtx* c, uint32_t target, uint32_t argbytes) {
     if (target & 0x80000000u) { rex_kernel_dispatch(c, target & 0x7FFFFFFFu); return; }
     void (*fn)(RecompCtx*) = rex_lookup(target);
     if (fn) { rex_dispatch_fn(c, target, fn); return; }
     rex_unimplemented("indirect call", target);
     c->eax = 0;
-    c->esp += 4u;   /* pop the return slot */
+    c->esp += 4u + argbytes;   /* return slot + the stdcall/thiscall args */
 }
+
+void rex_icall(RecompCtx* c, uint32_t target) { rex_icall_n(c, target, 0u); }
 
 void rex_dispatch(RecompCtx* c, uint32_t target) {
     /* An unfixed-up kernel thunk still holds 0x80000000 | ordinal. */
