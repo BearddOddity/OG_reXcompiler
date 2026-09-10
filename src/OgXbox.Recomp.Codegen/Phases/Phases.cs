@@ -237,6 +237,21 @@ public static class MergePhase
             if (changed == 0) break;
         }
 
+        // Second-chance resolution: an unresolved branch whose target lands
+        // *inside* another registered function is a tail call to that function's
+        // internal label (ReXGlue classifyTarget case 4). Codegen emits it as a
+        // call into that function; here it just needs to stop blocking the seal.
+        foreach (var node in g.PendingFunctions.ToList())
+        {
+            foreach (var j in node.UnresolvedJumps.ToArray())
+            {
+                var owner = g.GetFunctionContaining(j.Target);
+                if (owner is null || ReferenceEquals(owner, node)) continue;
+                node.AddTailCall(j.Site, CallTarget.Function(owner));
+                node.RemoveUnresolvedJump(j.Site);
+            }
+        }
+
         g.MarkFuncletRegisterSharing();
         g.SealAllReady();
     }

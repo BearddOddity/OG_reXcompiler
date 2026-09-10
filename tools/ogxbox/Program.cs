@@ -23,11 +23,13 @@ bool doEmit = args[0] == "emit";
 
 string xbePath = args[1];
 string outDir = "ogxbox-out";
+string? configPath = null;
 var seeds = Array.Empty<uint>();
 
 for (int i = 2; i < args.Length - 1; i++)
 {
     if (args[i] == "-o") outDir = args[i + 1];
+    else if (args[i] == "--config") configPath = args[i + 1];
     else if (args[i] == "--seed")
         seeds = args[i + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
             .Select(ParseAddr).ToArray();
@@ -47,7 +49,22 @@ Console.WriteLine($"XBE: base=0x{xbe.BaseAddress:X8} entry=0x{xbe.EntryPoint:X8}
                   $"({(xbe.IsDebug ? "debug" : "retail")})");
 
 var view = BinaryView.FromXbe(xbe);
-var cfg = new RecompilerConfig();
+
+RecompilerConfig cfg;
+if (configPath is not null)
+{
+    cfg = RecompilerConfigLoader.Load(configPath, out var cv);
+    foreach (var w in cv.Warnings) Console.Error.WriteLine($"config warning: {w}");
+    foreach (var e in cv.Errors) Console.Error.WriteLine($"config error: {e}");
+    if (!cv.Valid) return 4;
+    Console.WriteLine($"config: {configPath} — {cfg.SeedFunctions.Count} seeds, " +
+                      $"{cfg.SwitchTables.Count} switch tables, {cfg.MidAsmHooks.Count} hooks, " +
+                      $"{cfg.Functions.Count} function overrides");
+}
+else
+{
+    cfg = new RecompilerConfig();
+}
 foreach (var s in seeds) cfg.SeedFunctions.Add(s);
 
 var ctx = CodegenContext.Create(view, cfg);

@@ -602,10 +602,16 @@ public sealed class CEmitter
             {
                 Line(b, $"goto loc_{target:X};");
             }
+            else if (_nameOf(target) is { } name)
+            {
+                Line(b, $"{name}(c); return; /* tail call */");
+            }
             else
             {
-                string name = _nameOf(target) ?? $"sub_{target:X8}";
-                Line(b, $"{name}(c); return; /* tail call */");
+                // jmp into another function's body (or an unregistered address):
+                // route through the runtime dispatcher, which loudly fails if
+                // 0xTARGET isn't a registered entry point.
+                Line(b, $"rex_dispatch(c, 0x{target:X8}u); return; /* mid-function tail jump */");
             }
         }
         else
