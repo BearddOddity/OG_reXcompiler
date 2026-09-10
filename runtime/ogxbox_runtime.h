@@ -24,7 +24,12 @@ extern "C" {
 extern uint8_t* g_guest_ram;
 extern uint32_t g_guest_ram_size;
 
-#define XBOX_PTR(addr) ((void*)(g_guest_ram + (uint32_t)(addr)))
+/* The Xbox memory controller has a 26-bit address bus, so every RAM access
+ * wraps modulo 64 MB — code does `base + large_offset` and relies on it. Fold
+ * anything below the kernel/MMIO window (0x40000000) into the 64 MB of RAM;
+ * leave kernel space (0x80010000 fake xboxkrnl page) untouched. */
+#define REX_WRAP(a) (((uint32_t)(a) < 0x40000000u) ? ((uint32_t)(a) & 0x03FFFFFFu) : (uint32_t)(a))
+#define XBOX_PTR(addr) ((void*)(g_guest_ram + REX_WRAP(addr)))
 
 #define MEM8(a)   (*(volatile uint8_t*)  XBOX_PTR(a))
 #define MEM16(a)  (*(volatile uint16_t*) XBOX_PTR(a))

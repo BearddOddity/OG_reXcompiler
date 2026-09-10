@@ -229,14 +229,19 @@ void phase_discover(CodegenContext* ctx) {
 
     /* Function pointers stored in data sections — MSVC _initterm ctor tables,
      * callback arrays, dispatch tables the recursive scanner never reaches.
-     * DISCOVERED authority: real extent detection and merge/gapfill win. */
-    {
+     * DISCOVERED authority: real extent detection and merge/gapfill win.
+     * Skipped when the config supplies a full [functions] list (>1000): that
+     * list is authoritative and fnptrscan's guesses would only add noise. */
+    if (ctx->config->functions.len <= 1000) {
         U32Vec fps = {0};
         fnptrscan_run(ctx->bv, ctx->scan.code_regions.data, ctx->scan.code_regions.len, &fps);
         for (size_t i = 0; i < fps.len; i++)
             fg_add_function(g, fps.data[i], 0, AUTH_DISCOVERED, NULL, 1);
         fprintf(stderr, "  [fnptrscan] %zu data function pointers seeded\n", fps.len);
         vec_free(&fps);
+    } else {
+        fprintf(stderr, "  [fnptrscan] skipped — config supplies %zu functions\n",
+                ctx->config->functions.len);
     }
 
     long last_count = -1;

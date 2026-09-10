@@ -7,6 +7,8 @@
 #   - a handful of engine helpers reached only through .text-internal jump
 #     tables the scanner does not model
 
+includes = ["xmen-legends-functions.toml"]
+
 seeds = [
   # CRT / thread startup
   0x1A3639, 0x1A23F3, 0x1A35AC, 0x1A3554, 0x11E40,
