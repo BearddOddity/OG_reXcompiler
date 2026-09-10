@@ -1,0 +1,6 @@
+[submodule "third_party/zydis"]
+	path = third_party/zydis
+	url = https://github.com/zyantific/zydis
+[submodule "third_party/tomlc99"]
+	path = third_party/tomlc99
+	url = https://github.com/cktan/tomlc99

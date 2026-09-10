@@ -1,0 +1,73 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "ogxbox/1.0.0": {
+        "dependencies": {
+          "OgXbox.Recomp.Codegen": "1.0.0"
+        },
+        "runtime": {
+          "ogxbox.dll": {}
+        }
+      },
+      "Iced/1.21.0": {
+        "runtime": {
+          "lib/netstandard2.1/Iced.dll": {
+            "assemblyVersion": "1.21.0.0",
+            "fileVersion": "1.21.0.0"
+          }
+        }
+      },
+      "Tomlyn/0.17.0": {
+        "runtime": {
+          "lib/net7.0/Tomlyn.dll": {
+            "assemblyVersion": "0.17.0.0",
+            "fileVersion": "0.17.0.0"
+          }
+        }
+      },
+      "OgXbox.Recomp.Codegen/1.0.0": {
+        "dependencies": {
+          "Iced": "1.21.0",
+          "Tomlyn": "0.17.0"
+        },
+        "runtime": {
+          "OgXbox.Recomp.Codegen.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "ogxbox/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "Iced/1.21.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-dv5+81Q1TBQvVMSOOOmRcjJmvWcX3BZPZsIq31+RLc5cNft0IHAyNlkdb7ZarOWG913PyBoFDsDXoCIlKmLclg==",
+      "path": "iced/1.21.0",
+      "hashPath": "iced.1.21.0.nupkg.sha512"
+    },
+    "Tomlyn/0.17.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-3BRbxOjZwgdXBGemOvJWuydaG/KsKrnG1Z15Chruvih8Tc8bgtLcmDgo6LPRqiF5LNh6X4Vmos7YuGteBHfePA==",
+      "path": "tomlyn/0.17.0",
+      "hashPath": "tomlyn.0.17.0.nupkg.sha512"
+    },
+    "OgXbox.Recomp.Codegen/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}
