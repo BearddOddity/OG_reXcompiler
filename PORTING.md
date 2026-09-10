@@ -27,28 +27,35 @@ PPC-specific and was re-derived, not transliterated.
 | `codegen_context.h` | — | `Phases/CodegenContext.cs` + `AnalysisState` | **done** | |
 | — | — | `Output/GraphExporter.cs` + `tools/ogxbox` | **done** | functions.json / labels.json / seeded_functions.json / summary; runnable CLI |
 | `config.cpp` | 621 | `Phases/RecompilerConfig.cs` | **partial** | struct done; TOML loading todo |
-| `instruction_dispatch.cpp` + `builders/` | 665 + ~5k | `Emit/*` | **todo** | **full x86 rewrite** — the largest remaining piece |
-| `codegen_writer.cpp` | 384 | `Emit/CodegenWriter.cs` | todo | file partitioning, per-file decl headers |
-| `project_recompiler.cpp` | 565 | `ProjectRecompiler.cs` | todo | top-level driver, manifest |
-| runtime layer (`rex/runtime/*`) | — | `OgXbox.Recomp.Runtime` (new project) | todo | `RecompContext`, memory, kernel HLE, dispatcher |
+| `instruction_dispatch.cpp` + `builders/` | 665 + ~5k | `Emit/CEmitter.cs` + `COperand.cs` | **done (99.7%)** | per-mnemonic dispatch, eager EFLAGS, per-call `RecompCtx*`, x87 stack, REP string ops |
+| — | — | `runtime/ogxbox_runtime.h` | **done** | the generated-code contract |
+| `codegen_writer.cpp` | 384 | `Emit/CodegenWriter.cs` | **done (lean)** | partitioned `recomp_NNNN.c` + `recomp_decls.h` + header copy |
+| — | — | `Output/GraphExporter.cs` + `tools/ogxbox` | **done** | `ogxbox analyze|emit <xbe>` |
+| `project_recompiler.cpp` | 565 | `ProjectRecompiler.cs` | todo | multi-module manifest driver |
+| runtime layer (`rex/runtime/*`) | — | `OgXbox.Recomp.Runtime` (new project) | todo | RAM alloc, `rex_dispatch` table, kernel HLE, entry shim |
 
 ## State on the real XBE (X-Men Legends `default.xbe`, Release build)
 
-38,888 functions in ~5 s — 7,281 via direct calls, 3,424 via vtables, 28,052
-gap-fill, 130 imports. 18,411 sealed, 20,477 pending, 244 validation errors.
-For comparison the X-Men Python pipeline reached ~1,199 hand-seeded functions.
+- **Analysis**: 38,888 functions in ~5 s — 7,281 via direct calls, 3,424 via
+  vtables, 28,052 gap-fill, 130 imports. 18,411 sealed, 20,477 pending, 244
+  validation errors. (X-Men Python pipeline: ~1,199 hand-seeded.)
+- **Emit**: 18,281 sealed functions, 912,354 instructions, **99.7% lowered** to
+  C (2,953 unimplemented — Iretd, In/Out port I/O, BCD ops, and data decoded as
+  code in gap-fill regions). No C compiler in this environment to compile-test
+  the output; emitter verified by 41 unit tests on emitted-text patterns.
 
 ## Remaining work, in order
 
-1. **Shrink the ~20k pending** — more x86 jump-table forms, `functionPointerScan`
-   (`mov reg, imm32` that is a code address), vacancy absorption in Merge,
-   cross-function internal-branch handling. Target: pending « sealed.
-2. `RecompilerConfig` TOML loading (switch tables, mid-asm hooks, seeds, chunks).
-3. **`Emit/` — the x86→C instruction emitter.** Dispatch table + register/EFLAGS
-   model + per-mnemonic builders. Reference: the X-Men Python `tools/recomp`
-   BatchTranslator (a working x86→C lifter) and ReXGlue's `builders/` shape.
-4. `CodegenWriter` (partitioned .c/.h output) + `ProjectRecompiler` driver.
-5. `OgXbox.Recomp.Runtime` — the execution layer (own project; vault blueprint).
+1. **`OgXbox.Recomp.Runtime`** — guest RAM allocation, XBE section load, the
+   `rex_dispatch` guest-addr→fn table, kernel-import HLE (`__imp__*`), and an
+   entry shim. Without this the generated C links but does not run.
+2. **Shrink the ~20k pending** — more x86 jump-table forms, `functionPointerScan`
+   (`mov reg, imm32` code address), Merge vacancy absorption, cross-function
+   internal-branch handling. Target: pending « sealed.
+3. `RecompilerConfig` TOML loading (switch tables, mid-asm hooks, seeds, chunks).
+4. Fill the emitter tail (real ones: cmpxchg8b, some SSE) + compile-verify the
+   output on a box with a C compiler.
+5. `ProjectRecompiler` multi-module driver.
 
 ## x86 jump-table patterns (for `FunctionScanner`)
 

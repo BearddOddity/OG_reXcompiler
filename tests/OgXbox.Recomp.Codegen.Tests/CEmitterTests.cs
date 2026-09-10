@@ -102,6 +102,37 @@ public class CEmitterTests
     }
 
     [Fact]
+    public void RepMovsd_LowersToLoop()
+    {
+        var (ctx, fn) = Build(a =>
+        {
+            a.cld();
+            a.rep.movsd();
+            a.ret();
+        });
+        var c = EmitOne(ctx, fn);
+        Assert.Contains("c->df = 0;", c);
+        Assert.Contains("while (c->ecx != 0)", c);
+        Assert.Contains("MEM32(c->edi) = MEM32(c->esi);", c);
+    }
+
+    [Fact]
+    public void X87_FldFaddpFstp_UsesStack()
+    {
+        var (ctx, fn) = Build(a =>
+        {
+            a.fld(__dword_ptr[esi]);
+            a.fld(__dword_ptr[esi + 4]);
+            a.faddp(st1, st0);
+            a.fstp(__dword_ptr[edi]);
+            a.ret();
+        });
+        var c = EmitOne(ctx, fn);
+        Assert.Contains("FPU_PUSH(c,", c);
+        Assert.Contains("FPU_POP(c);", c);
+    }
+
+    [Fact]
     public void UnknownInstruction_EmitsMarker_AndIsCounted()
     {
         var (ctx, fn) = Build(a =>

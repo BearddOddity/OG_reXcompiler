@@ -40,10 +40,26 @@ typedef struct RecompCtx {
     /* Eagerly-maintained EFLAGS bits (0/1). */
     uint8_t cf, pf, af, zf, sf, of, df;
 
-    /* x87 top-of-stack scratch for the few float ops the emitter lowers. */
+    /* x87: a circular register stack + a status word for fcom/fnstsw. */
     double st[8];
     uint8_t fpu_top;
+    uint16_t fpu_sw;
+    uint16_t fpu_cw;
 } RecompCtx;
+
+/* x87 stack access, ST(i) relative to top. */
+#define FPU_ST(c, i)   ((c)->st[((c)->fpu_top + (i)) & 7])
+#define FPU_PUSH(c, v)  do { (c)->fpu_top = ((c)->fpu_top - 1) & 7; FPU_ST(c, 0) = (double)(v); } while (0)
+#define FPU_POP(c)      do { (c)->fpu_top = ((c)->fpu_top + 1) & 7; } while (0)
+
+/* fcom family: set C3/C2/C0 (status-word bits 14/10/8) from an ordered compare. */
+static inline void rex_fcom(RecompCtx* c, double a, double b) {
+    c->fpu_sw &= (uint16_t)~0x4500u;
+    if (a > b)      { /* 000 */ }
+    else if (a < b) { c->fpu_sw |= 0x0100u; }              /* C0 */
+    else if (a == b){ c->fpu_sw |= 0x4000u; }              /* C3 */
+    else            { c->fpu_sw |= 0x4500u; }              /* unordered */
+}
 
 /* ---- sub-register access ------------------------------------------------- */
 #define LO8(r)   ((uint8_t)((r) & 0xFFu))
