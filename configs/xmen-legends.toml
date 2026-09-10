@@ -12,7 +12,9 @@ manual_file = "configs/xmen-legends-manual.c"
 includes = ["xmen-legends-functions.toml"]
 
 seeds = [
-  # CRT / thread startup
+  # CRT / thread startup. 0x342BFC / 0x342B3C look like bare epilogues but are
+  # real indirect-dispatch targets (MSVC C++ EH catch funclets that unwind the
+  # enclosing frame): removing them stalls the heap allocator at ~100 calls.
   0x1A3639, 0x1A23F3, 0x1A35AC, 0x1A3554, 0x11E40,
   0x342B3C, 0x343862, 0x346743, 0x342BFC,
 
