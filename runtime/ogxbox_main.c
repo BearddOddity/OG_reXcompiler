@@ -9,10 +9,35 @@
 #include <stdio.h>
 #include <windows.h>
 
+#ifdef REX_TRACE
+/* OGX_WATCH=0xADDR — poll a guest dword and dump the guest call stack the
+ * instant it changes. Finds the writer of a corrupted global. */
+static DWORD WINAPI watch_thread(LPVOID p) {
+    uint32_t va = (uint32_t)(uintptr_t)p;
+    extern void rex_global_backtrace(void);
+    uint32_t last = *(volatile uint32_t*)(g_guest_ram + va);
+    for (;;) {
+        uint32_t now = *(volatile uint32_t*)(g_guest_ram + va);
+        if (now != last) {
+            fprintf(stderr, "[ogxbox] WATCH 0x%08X: 0x%08X -> 0x%08X\n", va, last, now);
+            rex_global_backtrace();
+            last = now;
+        }
+    }
+}
+#endif
+
 int main(int argc, char** argv) {
     const char* image = argc > 1 ? argv[1] : "recomp_image.bin";
     fprintf(stderr, "[ogxbox] booting %s\n", image);
     int rc = rex_boot(image);
+#ifdef REX_TRACE
+    { const char* w = getenv("OGX_WATCH");
+      if (w && g_guest_ram) {
+          uint32_t va = (uint32_t)strtoul(w, 0, 0);
+          CloseHandle(CreateThread(0,0,watch_thread,(LPVOID)(uintptr_t)va,0,0));
+      } }
+#endif
     fprintf(stderr, "[ogxbox] entry returned %d; waiting on guest threads...\n", rc);
 
     /* The XBE entry point (CRT startup) typically spawns the game's main thread
