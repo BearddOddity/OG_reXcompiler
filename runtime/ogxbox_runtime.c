@@ -94,9 +94,15 @@ void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal);  /* recomp_kthunks
  * leaked or over-popped the guest stack — the recurring recomp corruption. */
 void rex_call_balance(uint32_t site, uint32_t target,
                       uint32_t sp0, uint32_t sp1, uint32_t bp0, uint32_t bp1) {
+    /* _SEH_prolog4 (0x3432A8) / _SEH_epilog4 (0x3432E3) are the SEH frame
+     * machinery: the prolog deliberately returns with esp below the call site
+     * (it did `sub esp, localsize`), the epilog deliberately returns with esp
+     * far above it (it tore the frame down). Neither balances at its own call
+     * boundary by design — exempt them from both checks. */
+    if (target == 0x003432A8u || target == 0x003432E3u) return;
     int32_t sd = (int32_t)(sp1 - sp0);
     int bad_sp = !(sd >= 0 && sd <= 64);               /* plausible ret N */
-    int bad_bp = (bp1 != bp0) && target != 0x003432A8u; /* _SEH_prolog4 sets ebp on purpose */
+    int bad_bp = (bp1 != bp0);
     if (!bad_sp && !bad_bp) return;
     static uint64_t seen[2048]; static int nseen;
     uint64_t key = ((uint64_t)site << 32) | target;

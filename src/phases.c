@@ -138,6 +138,81 @@ void phase_register(CodegenContext* ctx) {
 }
 
 /*=========================================================================
+ * Coalesce — undo bogus function splits in the config list
+ *
+ * An authoritative [functions] list (e.g. X-Men's functions.json) sometimes
+ * lists a function's cold path or shared epilogue as its own entry. Honoring
+ * the split truncates the real function: discover_one clips its blocks at the
+ * declared end, so a local `jz cold_path` that sits past the hot-path `ret`
+ * becomes a tail dispatch — it returns without unwinding `sub esp, N`, leaking
+ * the guest stack frame. Fold such a fragment back into its predecessor.
+ *=======================================================================*/
+
+static int frag_is_real_entry(const DecodedInsn* first) {
+    /* real MSVC entries open with a frame setup or a hot-patch pad */
+    return strstr(first->text, "push ebp") != NULL
+        || strstr(first->text, "sub esp,") != NULL
+        || strstr(first->text, "enter ")   != NULL
+        || strstr(first->text, "mov edi, edi") != NULL;
+}
+
+void phase_coalesce(CodegenContext* ctx) {
+    FunctionGraph* g = &ctx->graph;
+    u32map extended; u32map_init(&extended, 64);
+    int folded = 0;
+
+    for (int iter = 0; iter < 8; iter++) {
+        int changed = 0;
+        U32Vec bases = {0};
+        for (size_t i = 0; i < g->functions.cap; i++)
+            if (g->functions.used[i]) vec_push(&bases, g->functions.keys[i]);
+
+        for (size_t i = 0; i < bases.len; i++) {
+            FunctionNode* a = fg_get(g, bases.data[i]);
+            if (!a || a->authority != AUTH_CONFIG || a->state != ST_REGISTERED || a->size == 0)
+                continue;
+            uint32_t bend = fn_end(a);
+            FunctionNode* b = fg_get(g, bend);
+            if (!b || b->authority != AUTH_CONFIG || b->state != ST_REGISTERED
+                || fn_is_import(b) || b->size == 0)
+                continue;
+
+            DecodedInsn bf;
+            if (!db_decode_at(ctx->db, b->base, &bf)) continue;
+            if (frag_is_real_entry(&bf)) continue;
+
+            int allow_fallthrough = u32map_has(&extended, a->base);
+            int reaches_cond = 0;
+            DecodedInsn di, last; int have_last = 0; uint32_t p = a->base;
+            while (p < bend) {
+                if (!db_decode_at(ctx->db, p, &di)) { have_last = 0; break; }
+                if (di.flow == FLOW_CONDITIONAL_BR && di.target == b->base) reaches_cond = 1;
+                last = di; have_last = 1;
+                uint32_t np = di_end(&di);
+                if (np <= p) { have_last = 0; break; }
+                p = np;
+            }
+            int fallthrough = allow_fallthrough && have_last && p == bend
+                && last.flow != FLOW_RETURN && last.flow != FLOW_UNCONDITIONAL_BR
+                && last.flow != FLOW_INDIRECT_BR && last.flow != FLOW_INT3;
+
+            if (!reaches_cond && !fallthrough) continue;
+
+            a->size = fn_end(b) - a->base;
+            if (b->shares_registers) a->shares_registers = 1;
+            fg_remove(g, b->base);
+            fg_register_chunk(g, a->base, a->size);
+            u32set_add(&extended, a->base);
+            changed++; folded++;
+        }
+        vec_free(&bases);
+        if (!changed) break;
+    }
+    u32map_free(&extended);
+    fprintf(stderr, "  [coalesce] folded %d split fragment(s)\n", folded);
+}
+
+/*=========================================================================
  * PhaseHelpers — known set + discover-pending
  *=======================================================================*/
 
@@ -458,6 +533,7 @@ static double now_s(void) { return (double)clock() / CLOCKS_PER_SEC; }
 
 int analysis_pipeline_run(CodegenContext* ctx) {
     TIMED("register", phase_register(ctx));
+    TIMED("coalesce", phase_coalesce(ctx));
     TIMED("scan",     phase_scan(ctx));
     TIMED("discover", phase_discover(ctx));
     TIMED("gapfill",  phase_gapfill(ctx));

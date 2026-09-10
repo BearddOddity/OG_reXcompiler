@@ -6,6 +6,7 @@
 #include "context.h"
 
 void phase_register(CodegenContext* ctx);
+void phase_coalesce(CodegenContext* ctx);
 void phase_scan(CodegenContext* ctx);
 void phase_discover(CodegenContext* ctx);
 void phase_gapfill(CodegenContext* ctx);
