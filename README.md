@@ -57,9 +57,22 @@ Verified with clang-cl (LLVM 22) + VS BuildTools + Windows SDK: the full X-Men
 Legends recompilation (18.7k functions, 935k instructions) compiles with 0
 errors and runs.
 
+## Disclaimer
+
+Not affiliated with or endorsed by Microsoft, Xbox, or any publisher. Ships no
+game code or assets — it is a source-to-source compiler for a binary you
+supply. Full text: [`DISCLAIMER.md`](DISCLAIMER.md).
+
+## Credits
+
+A port of the analysis + codegen half of the **ReXGlue SDK** (Tom Clay and
+contributors, BSD-3-Clause), which is built on **Xenia** (Ben Vanik and the
+Xenia project) and credits **XenonRecomp** (hedge-dev) and **rexdex's
+recompiler** for the static-recompilation approach. Full acknowledgements:
+[`CREDITS.md`](CREDITS.md).
+
 ## License
 
-This project's own code: see `LICENSE` (TBD). Portions derived from ReXGlue
-(`rex::codegen`) — BSD-3-Clause, Copyright (c) 2026 Tom Clay; itself deriving
-from the Xenia project (Copyright (c) 2022 Ben Vanik and Xenia contributors).
-Full text in `LICENSE.rexglue`; derived files carry a header noting it.
+BSD-3-Clause — [`LICENSE`](LICENSE). This is a derivative work of ReXGlue; its
+upstream license is retained verbatim in [`LICENSE.rexglue`](LICENSE.rexglue),
+and derived source files carry a header noting the lineage.
