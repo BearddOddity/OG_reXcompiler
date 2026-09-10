@@ -172,10 +172,18 @@ void phase_coalesce(CodegenContext* ctx) {
             if (!a || a->authority != AUTH_CONFIG || a->state != ST_REGISTERED || a->size == 0)
                 continue;
             uint32_t bend = fn_end(a);
-            FunctionNode* b = fg_get(g, bend);
-            if (!b || b->authority != AUTH_CONFIG || b->state != ST_REGISTERED
-                || fn_is_import(b) || b->size == 0)
-                continue;
+
+            /* the next CONFIG fragment starting at, or a few bytes past, A's
+             * end (the gap is a mis-attributed orphan instruction) */
+            FunctionNode* b = NULL;
+            for (uint32_t ba = bend; ba < bend + 32; ba++) {
+                FunctionNode* cand = fg_get(g, ba);
+                if (!cand) continue;
+                if (cand->authority == AUTH_CONFIG && cand->state == ST_REGISTERED
+                    && !fn_is_import(cand) && cand->size != 0) b = cand;
+                break;   /* first node found in the window, whatever it is */
+            }
+            if (!b) continue;
 
             DecodedInsn bf;
             if (!db_decode_at(ctx->db, b->base, &bf)) continue;
@@ -184,19 +192,24 @@ void phase_coalesce(CodegenContext* ctx) {
             int allow_fallthrough = u32map_has(&extended, a->base);
             int reaches_cond = 0;
             DecodedInsn di, last; int have_last = 0; uint32_t p = a->base;
-            while (p < bend) {
+            while (p < b->base) {
                 if (!db_decode_at(ctx->db, p, &di)) { have_last = 0; break; }
-                if (di.flow == FLOW_CONDITIONAL_BR && di.target == b->base) reaches_cond = 1;
+                if ((di.flow == FLOW_CONDITIONAL_BR || di.flow == FLOW_UNCONDITIONAL_BR)
+                    && di.target == b->base) reaches_cond = 1;
                 last = di; have_last = 1;
                 uint32_t np = di_end(&di);
                 if (np <= p) { have_last = 0; break; }
                 p = np;
             }
-            int fallthrough = allow_fallthrough && have_last && p == bend
+            /* uncond jmp landing a handful of bytes past A's end is a split
+             * marker, not a tail call to a far function */
+            int short_jmp = have_last && last.flow == FLOW_UNCONDITIONAL_BR
+                && last.target == b->base;
+            int fallthrough = allow_fallthrough && have_last && p == b->base
                 && last.flow != FLOW_RETURN && last.flow != FLOW_UNCONDITIONAL_BR
                 && last.flow != FLOW_INDIRECT_BR && last.flow != FLOW_INT3;
 
-            if (!reaches_cond && !fallthrough) continue;
+            if (!reaches_cond && !short_jmp && !fallthrough) continue;
 
             a->size = fn_end(b) - a->base;
             if (b->shares_registers) a->shares_registers = 1;
