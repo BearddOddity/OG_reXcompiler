@@ -59,6 +59,18 @@ public sealed class DecodedBinary
         return result;
     }
 
+    /// <summary>Decode the raw iced instruction at <paramref name="addr"/> (operand-level detail).</summary>
+    public bool TryDecodeRaw(uint addr, out Instruction insn)
+    {
+        var span = _view.Translate(addr);
+        if (span.Length == 0) { insn = default; return false; }
+        int take = Math.Min(span.Length, 15);
+        var decoder = Decoder.Create(32, new ByteArrayCodeReader(span.Slice(0, take).ToArray()), addr,
+                                     DecoderOptions.None);
+        decoder.Decode(out insn);
+        return !insn.IsInvalid;
+    }
+
     /// <summary>Linear sweep of a section from its base (desyncs on data; use for a first cut only).</summary>
     public IEnumerable<DecodedInstruction> LinearSweep(SectionView sec)
     {
