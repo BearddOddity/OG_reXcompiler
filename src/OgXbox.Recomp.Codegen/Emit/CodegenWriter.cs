@@ -22,10 +22,14 @@ public sealed class CodegenStats
 
 public static class CodegenWriter
 {
-    public static CodegenStats WriteAll(CodegenContext ctx, string outDir, int functionsPerFile = 500)
+    public static CodegenStats WriteAll(CodegenContext ctx, string outDir,
+                                        Binary.Xbe? image = null, int functionsPerFile = 500)
     {
         Directory.CreateDirectory(outDir);
         var stats = new CodegenStats();
+
+        if (image is not null)
+            ImageWriter.Write(image, outDir);
 
         var emitter = new CEmitter(ctx.Decoded, a => ctx.Graph.GetFunction(a)?.Name);
         var funcs = ctx.Graph.SealedFunctions
@@ -68,7 +72,24 @@ public static class CodegenWriter
         File.WriteAllText(Path.Combine(outDir, "recomp_decls.h"), decls.ToString());
         WriteDispatchTable(ctx, outDir, funcs);
         WriteImportStubs(ctx, outDir);
+        WriteCMake(outDir, fileIdx);
         return stats;
+    }
+
+    private static void WriteCMake(string outDir, int cFileCount)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("cmake_minimum_required(VERSION 3.16)");
+        sb.AppendLine("project(recomp C)");
+        sb.AppendLine("set(CMAKE_C_STANDARD 11)");
+        sb.AppendLine("add_executable(recomp");
+        sb.AppendLine("  ogxbox_main.c ogxbox_runtime.c ogxbox_kernel.c");
+        sb.AppendLine("  recomp_dispatch.c recomp_imports.c recomp_image.c");
+        for (int i = 0; i < cFileCount; i++)
+            sb.AppendLine($"  recomp_{i:D4}.c");
+        sb.AppendLine(")");
+        sb.AppendLine("# recomp_image.bin must sit next to the executable at run time.");
+        File.WriteAllText(Path.Combine(outDir, "CMakeLists.txt"), sb.ToString());
     }
 
     private static void WriteDispatchTable(CodegenContext ctx, string outDir,
@@ -117,7 +138,11 @@ public static class CodegenWriter
     {
         // The header ships as an embedded resource OR sits next to the assembly.
         var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
-        foreach (var name in new[] { "ogxbox_runtime.h", "ogxbox_runtime.c" })
+        foreach (var name in new[]
+                 {
+                     "ogxbox_runtime.h", "ogxbox_runtime.c",
+                     "ogxbox_kernel.c", "ogxbox_main.c",
+                 })
         {
             string? src = new[]
             {

@@ -41,17 +41,25 @@ void rex_dispatch(RecompCtx* c, uint32_t target) {
     rex_unimplemented("indirect target", target);
 }
 
-/* Allocate guest RAM and run the entry point. `entry` is the generated fn for
- * the XBE entry address; `initial_esp` is the top of the guest stack. */
-int rex_boot(void (*entry)(RecompCtx*), uint32_t ram_size, uint32_t initial_esp) {
-    g_guest_ram = (uint8_t*)calloc(1, ram_size);
+/* Generated (recomp_image.c). */
+extern const unsigned int g_rex_image_base, g_rex_ram_size, g_rex_entry_va, g_rex_initial_esp;
+int rex_load_image(const char* bin_path);
+
+/* Allocate guest RAM, map the XBE image, run the entry point. */
+int rex_boot(const char* image_bin_path) {
+    g_guest_ram = (uint8_t*)calloc(1, g_rex_ram_size);
     if (!g_guest_ram) return -1;
-    g_guest_ram_size = ram_size;
+    g_guest_ram_size = g_rex_ram_size;
+
+    int rc = rex_load_image(image_bin_path);
+    if (rc != 0) { fprintf(stderr, "[ogxbox] image load failed: %d\n", rc); return rc; }
+
+    void (*entry)(RecompCtx*) = rex_lookup(g_rex_entry_va);
+    if (!entry) { fprintf(stderr, "[ogxbox] no generated fn for entry 0x%08X\n", g_rex_entry_va); return -5; }
 
     RecompCtx ctx;
     memset(&ctx, 0, sizeof ctx);
-    ctx.esp = initial_esp;
-    ctx.fpu_top = 0;
+    ctx.esp = g_rex_initial_esp;
     ctx.fpu_cw = 0x037F;
 
     entry(&ctx);

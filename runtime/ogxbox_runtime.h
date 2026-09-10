@@ -124,6 +124,10 @@ void rex_unimplemented(const char* what, uint32_t addr);
 /* Indirect call/jump dispatch — resolves a guest address to a generated fn. */
 void rex_dispatch(RecompCtx* c, uint32_t target);
 
+/* Boot: alloc guest RAM, map recomp_image.bin, run the XBE entry point.
+ * Returns the guest's eax at exit, or a negative error. */
+int rex_boot(const char* image_bin_path);
+
 #ifdef __cplusplus
 }
 #endif

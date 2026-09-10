@@ -82,14 +82,14 @@ Console.WriteLine($"wrote functions.json, labels.json, seeded_functions.json, an
 
 if (doEmit)
 {
-    var es = CodegenWriter.WriteAll(ctx, outDir);
+    var es = CodegenWriter.WriteAll(ctx, outDir, xbe);
     double cov = es.Instructions == 0 ? 0
         : 100.0 * (es.Instructions - es.Unimplemented) / es.Instructions;
     Console.WriteLine($"emit: {es.Functions} functions, {es.Instructions} instructions, " +
                       $"{es.Unimplemented} unimplemented ({cov:F1}% lowered)");
     foreach (var (m, n) in es.UnimplementedByMnemonic.OrderByDescending(kv => kv.Value).Take(15))
         Console.WriteLine($"  {n,8}  {m}");
-    Console.WriteLine($"wrote recomp_*.c, recomp_decls.h, ogxbox_runtime.h -> {outDir}/");
+    Console.WriteLine($"wrote recomp_*.c + dispatch/imports/image + runtime + CMakeLists.txt -> {outDir}/");
 }
 
 return clean ? 0 : 3;
