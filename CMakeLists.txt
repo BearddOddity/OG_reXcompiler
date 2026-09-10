@@ -20,7 +20,7 @@ add_executable(ogxbox
   src/kernel_exports.c
   src/binary_view.c
   src/decoded.c
-  # src/func_graph.c
+  src/func_graph.c
   # src/scanners.c
   # src/func_scanner.c
   # src/config.c
