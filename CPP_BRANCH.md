@@ -57,4 +57,8 @@ hand-built starter kernel on `main`.
 
 ## Status
 
-Scaffolding. Nothing builds yet.
+Step 1 done. `rexcodegen.lib` compiles from ReXGlue's own source (function_graph,
+vtable_scanner, sig_scanner, config, codegen_flags) against a Zydis-backed
+`x86::Instruction`. Deps wired (fmt, toml++, inja, nlohmann/json, xxHash, zydis,
+spdlog; C++23; clang-cl). `emitCpp` stubbed, `function_scanner` + phases +
+decoder + runtime still to do.
