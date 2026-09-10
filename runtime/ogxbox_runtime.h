@@ -129,6 +129,12 @@ void rex_dispatch(RecompCtx* c, uint32_t target);
 /* True if a generated (or manually overridden) function exists at addr. */
 int rex_has_fn(uint32_t addr);
 
+/* Guest bump allocator (ogxbox_kernel.c) — shared by the HLE and the vendored
+ * kernel's xbox_Heap* shims. Returns a guest VA, 0 on exhaustion. */
+uint32_t rex_pool_alloc(uint32_t size);
+uint32_t rex_pool_alloc_aligned(uint32_t size, uint32_t align);
+uint32_t rex_pool_highwater(void);
+
 /* One generated function: guest entry address -> its C function.
  * recomp_manual.c defines g_rex_manual[] of these for hand-written overrides. */
 typedef struct { uint32_t addr; void (*fn)(RecompCtx*); } RexDispatchEntry;

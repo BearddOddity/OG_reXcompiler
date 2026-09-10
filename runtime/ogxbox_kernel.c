@@ -27,23 +27,34 @@ static void ret_stdcall(RecompCtx* c, uint32_t eax, int argc) { c->eax = eax; c-
 static void ret_cdecl(RecompCtx* c, uint32_t eax) { c->eax = eax; c->esp += 4u; }
 static void wr32(uint32_t p, uint32_t v) { if (p) MEM32(p) = v; }
 
-/* --- pool / heap: a single bump allocator over the top of guest RAM ------ */
+/* --- pool / heap: one bump allocator, shared with the vendored kernel -----
+ * Guest map: sections 0x10000-~0x600000, kernel data 0x700000, TIB
+ * 0x740000-0x780000, [ THIS POOL 0x800000-0x2E00000 ], free, guest stack
+ * grows down from ~0x3700000. */
+#define REX_POOL_BASE  0x00800000u
+#define REX_POOL_END   0x02E00000u
 static uint32_t g_pool_next, g_pool_end;
+static uint32_t g_pool_hi;
 static CRITICAL_SECTION g_pool_lock;
 static void pool_init(void) {
     InitializeCriticalSection(&g_pool_lock);
-    g_pool_end  = g_guest_ram_size - (1u << 20);   /* leave 1 MB headroom */
-    g_pool_next = g_pool_end - (16u << 20);         /* 16 MB pool */
+    g_pool_next = REX_POOL_BASE;
+    g_pool_end  = REX_POOL_END;
 }
-static uint32_t pool_alloc(uint32_t size) {
+uint32_t rex_pool_alloc(uint32_t size) { return rex_pool_alloc_aligned(size, 16u); }
+uint32_t rex_pool_alloc_aligned(uint32_t size, uint32_t align) {
     if (!g_pool_end) pool_init();
+    if (align < 16u) align = 16u;
     EnterCriticalSection(&g_pool_lock);
+    uint32_t base = (g_pool_next + (align - 1u)) & ~(align - 1u);
     size = (size + 15u) & ~15u;
-    uint32_t p = (g_pool_next + size <= g_pool_end) ? g_pool_next : 0;
-    if (p) { g_pool_next += size; }
+    uint32_t p = (base + size <= g_pool_end) ? base : 0;
+    if (p) { g_pool_next = p + size; if (g_pool_next > g_pool_hi) g_pool_hi = g_pool_next; }
     LeaveCriticalSection(&g_pool_lock);
     return p;
 }
+uint32_t rex_pool_highwater(void) { return g_pool_hi; }
+static uint32_t pool_alloc(uint32_t size) { return rex_pool_alloc(size); }
 
 /* --- memory ------------------------------------------------------------- */
 void __imp__ExAllocatePool(RecompCtx* c)             { ret_stdcall(c, pool_alloc(arg(c,1)), 1); }

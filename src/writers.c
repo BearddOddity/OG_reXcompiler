@@ -211,8 +211,24 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
 
     /* runtime headers/sources */
     const char* rt[] = { "ogxbox_runtime.h", "ogxbox_runtime.c", "ogxbox_trace.c",
-                         "ogxbox_kernel.c", "ogxbox_thunkfix.c", "ogxbox_tib.c", "recomp_manual.c", "ogxbox_main.c", NULL };
+                         "ogxbox_kernel.c", "ogxbox_kernel_glue.c", "ogxbox_thunkfix.c",
+                         "ogxbox_tib.c", "recomp_manual.c", "ogxbox_main.c", NULL };
     for (int i = 0; rt[i]; i++) copy_file(runtime_dir, rt[i], out_dir);
+
+    /* vendored OG Xbox kernel (X-Men Legends recomp) + its platform shim */
+    char sub[1024];
+    snprintf(sub, sizeof sub, "%s/kernel", out_dir);   ensure_dir(sub);
+    snprintf(sub, sizeof sub, "%s/platform", out_dir); ensure_dir(sub);
+    const char* kern[] = {
+        "kernel/kernel.h", "kernel/kernel_ob.c", "kernel/kernel_thread.c",
+        "kernel/kernel_sync.c", "kernel/kernel_rtl.c", "kernel/kernel_file.c",
+        "kernel/kernel_io.c", "kernel/kernel_memory.c", "kernel/kernel_pool.c",
+        "kernel/kernel_hal.c", "kernel/kernel_path.c", "kernel/kernel_crypto.c",
+        "kernel/kernel_xbox.c", "kernel/kernel_thunks.c", "kernel/ogxbox_bridge.c",
+        "kernel/xbox_memory_layout.h", "kernel/xbox_page_zero_trap.h", "kernel/xbox_watch.h",
+        "platform/xbox_winnt.h", "platform/win32_compat.h", "platform/win32_compat.c",
+        NULL };
+    for (int i = 0; kern[i]; i++) copy_file(runtime_dir, kern[i], out_dir);
 
     /* decls header */
     strbuf decls = {0};
@@ -273,9 +289,11 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
     /* kernel thunk dispatch */
     {
         FILE* kt = open_out(out_dir, "recomp_kthunks.c");
-        fprintf(kt, "/* generated — xboxkrnl ordinal -> __imp__ */\n#include \"recomp_decls.h\"\n");
+        fprintf(kt, "/* generated — xboxkrnl ordinal -> __imp__ fallback (used by\n"
+                    "   ogxbox_kernel_glue.c's rex_kernel_dispatch when the bridge lacks a\n"
+                    "   handler for the ordinal). */\n#include \"recomp_decls.h\"\n");
         fprintf(kt, "void rex_unimplemented(const char*, unsigned int);\n\n");
-        fprintf(kt, "void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal) {\n  switch (ordinal) {\n");
+        fprintf(kt, "void rex_kthunk_fallback(RecompCtx* c, unsigned int ordinal) {\n  switch (ordinal) {\n");
         for (size_t i = 0; i < xbe->kernel_imports.len; i++) {
             const XbeKernelImport* k = &xbe->kernel_imports.data[i];
             fprintf(kt, "  case %d: __imp__%s(c); return;\n", k->ordinal, k->name);
@@ -291,11 +309,20 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
     {
         FILE* cm = open_out(out_dir, "CMakeLists.txt");
         fprintf(cm, "cmake_minimum_required(VERSION 3.16)\nproject(recomp C)\nset(CMAKE_C_STANDARD 11)\n");
+        fprintf(cm, "if (MSVC)\n  add_compile_definitions(_CRT_SECURE_NO_WARNINGS WIN32)\n"
+                    "  add_compile_options(/wd4005 /wd4013 /wd4133 /wd4267 /wd4244)\nendif()\n");
+        fprintf(cm, "include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/kernel)\n");
         fprintf(cm, "add_executable(recomp\n"
-                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_thunkfix.c ogxbox_tib.c recomp_manual.c\n"
-                    "  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c\n");
+                    "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_kernel_glue.c\n"
+                    "  ogxbox_thunkfix.c ogxbox_tib.c recomp_manual.c\n"
+                    "  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c\n"
+                    "  kernel/kernel_ob.c kernel/kernel_thread.c kernel/kernel_sync.c kernel/kernel_rtl.c\n"
+                    "  kernel/kernel_file.c kernel/kernel_io.c kernel/kernel_memory.c kernel/kernel_pool.c\n"
+                    "  kernel/kernel_hal.c kernel/kernel_path.c kernel/kernel_crypto.c kernel/kernel_xbox.c\n"
+                    "  kernel/kernel_thunks.c kernel/ogxbox_bridge.c platform/win32_compat.c\n");
         for (int k = 0; k < file_idx; k++) fprintf(cm, "  recomp_%04d.c\n", k);
-        fprintf(cm, ")\n# add -DREX_TRACE for a guest backtrace on unresolved calls\n"
+        fprintf(cm, ")\ntarget_link_libraries(recomp PRIVATE bcrypt)\n"
+                    "# add -DREX_TRACE for a guest backtrace on unresolved calls\n"
                     "# recomp_image.bin must sit next to the executable at run time.\n");
         fclose(cm);
     }
