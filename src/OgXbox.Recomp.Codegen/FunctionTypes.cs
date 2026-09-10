@@ -96,6 +96,16 @@ public readonly record struct Block(uint Base, uint Size)
 }
 
 //=============================================================================
+// Code region — a candidate-code span left by the Scan phase (End exclusive)
+//=============================================================================
+
+public readonly record struct CodeRegion(uint Start, uint End, string Section)
+{
+    public uint Size => End - Start;
+    public bool Contains(uint addr) => addr >= Start && addr < End;
+}
+
+//=============================================================================
 // Jump table (x86: jmp [reg*4 + table] / jmp [reg*4 + table + base])
 //=============================================================================
 
