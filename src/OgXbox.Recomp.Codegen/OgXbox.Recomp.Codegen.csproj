@@ -14,4 +14,9 @@
     <InternalsVisibleTo Include="OgXbox.Recomp.Codegen.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\..\runtime\ogxbox_runtime.h" Link="ogxbox_runtime.h"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

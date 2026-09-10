@@ -10,14 +10,16 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using OgXbox.Recomp.Codegen.Binary;
+using OgXbox.Recomp.Codegen.Emit;
 using OgXbox.Recomp.Codegen.Output;
 using OgXbox.Recomp.Codegen.Phases;
 
-if (args.Length < 2 || args[0] != "analyze")
+if (args.Length < 2 || (args[0] != "analyze" && args[0] != "emit"))
 {
-    Console.Error.WriteLine("usage: ogxbox analyze <file.xbe> [-o <outdir>] [--seed <addr>,...]");
+    Console.Error.WriteLine("usage: ogxbox <analyze|emit> <file.xbe> [-o <outdir>] [--seed <addr>,...]");
     return 2;
 }
+bool doEmit = args[0] == "emit";
 
 string xbePath = args[1];
 string outDir = "ogxbox-out";
@@ -60,6 +62,18 @@ Console.WriteLine($"validation: {(clean ? "clean" : $"{ctx.Errors.Count} errors"
 
 GraphExporter.WriteAll(ctx, outDir);
 Console.WriteLine($"wrote functions.json, labels.json, seeded_functions.json, analysis_summary.json -> {outDir}/");
+
+if (doEmit)
+{
+    var es = CodegenWriter.WriteAll(ctx, outDir);
+    double cov = es.Instructions == 0 ? 0
+        : 100.0 * (es.Instructions - es.Unimplemented) / es.Instructions;
+    Console.WriteLine($"emit: {es.Functions} functions, {es.Instructions} instructions, " +
+                      $"{es.Unimplemented} unimplemented ({cov:F1}% lowered)");
+    foreach (var (m, n) in es.UnimplementedByMnemonic.OrderByDescending(kv => kv.Value).Take(15))
+        Console.WriteLine($"  {n,8}  {m}");
+    Console.WriteLine($"wrote recomp_*.c, recomp_decls.h, ogxbox_runtime.h -> {outDir}/");
+}
 
 return clean ? 0 : 3;
 
