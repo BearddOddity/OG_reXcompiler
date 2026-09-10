@@ -500,9 +500,17 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
     int insn_count = 0;
     for (size_t bi = 0; bi < node->blocks.len; bi++) {
         uint32_t addr = blocks[bi].base, end = block_end(&blocks[bi]);
+        /* Bytes of `push` args feeding the next call. Only counts pushes that
+         * are plausibly arguments (immediate, memory, or a scratch reg) — a
+         * `push ebx/esi/edi/ebp` is a callee-saved save, not an arg. Reset on
+         * anything that breaks the run. Used to unwind unresolved stdcall/
+         * thiscall indirect calls without leaking their args. */
+        int arg_bytes = 0;
         while (addr < end) {
-            if (u32map_has(&e.emitted, addr))
+            if (u32map_has(&e.emitted, addr)) {
                 sb_addf(&e.b, "loc_%X:;\n", addr);
+                arg_bytes = 0;
+            }
 
             DecodedInsn di;
             RI r; r.addr = addr;
@@ -512,11 +520,22 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             if (!have_di || di.flow == FLOW_INVALID || di.length == 0) {
                 sb_addf(&e.b, "\t/* .byte @ 0x%08X */\n", addr);
                 addr++;
+                arg_bytes = 0;
                 continue;
             }
 
             sb_addf(&e.b, "\t/* %s */\n", di.text);
             insn_count++;
+
+            int arg_push = 0, is_any_push = 0;
+            if (have_raw && r.ins.mnemonic == ZYDIS_MNEMONIC_PUSH) {
+                is_any_push = 1;
+                ZydisRegister pr = r.ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER
+                                   ? r.ops[0].reg.value : ZYDIS_REGISTER_NONE;
+                int callee_saved = pr == ZYDIS_REGISTER_EBX || pr == ZYDIS_REGISTER_ESI ||
+                                   pr == ZYDIS_REGISTER_EDI || pr == ZYDIS_REGISTER_EBP;
+                arg_push = !callee_saved;
+            }
 
             if (di.flow == FLOW_INT3) { linef(&e, "REX_UNIMPLEMENTED(\"int3\", 0x%08X);", addr); }
             else if (di.flow == FLOW_CALL && di.target) {
@@ -540,13 +559,17 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             }
             else if (di.flow == FLOW_INDIRECT_CALL && have_raw) {
                 char t[256]; R(&r, 0, t, sizeof t);
-                /* On an unresolved target rex_icall pops the return slot so the
-                 * call site's frame stays balanced. (Arg-byte inference from
-                 * the preceding `push` run is unreliable — MSVC interleaves
-                 * callee-saved saves with arg setup — so we under-pop rather
-                 * than risk over-popping.) */
+                /* An unresolved target must not leak the return slot or the
+                 * pushed args. If a caller-side `add esp` follows, it is cdecl
+                 * and the caller cleans — pop only the return slot. */
+                DecodedInsn nxt;
+                int caller_cleans = db_decode_at(db, addr + di.length, &nxt) &&
+                    strncmp(nxt.text, "add esp,", 8) == 0;
                 linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
-                linef(&e, "rex_icall(c, %s);", t);
+                if (!caller_cleans && arg_bytes > 0)
+                    linef(&e, "rex_icall_n(c, %s, %du);", t, arg_bytes);
+                else
+                    linef(&e, "rex_icall(c, %s);", t);
             }
             else if (di.flow == FLOW_UNCONDITIONAL_BR && di.target) {
                 if (u32map_has(&e.emitted, di.target)) linef(&e, "goto loc_%X;", di.target);
@@ -588,6 +611,16 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
             else {
                 linef(&e, "REX_UNIMPLEMENTED(\"decode\", 0x%08X);", addr);
                 e.unimpl++;
+            }
+
+            if (arg_push) {
+                arg_bytes += 4;
+            } else if (!is_any_push &&
+                       (di.flow != FLOW_NEXT ||
+                        (have_raw && (r.ins.mnemonic == ZYDIS_MNEMONIC_POP ||
+                                      (strstr(di.text, " esp,") &&
+                                       (di.text[0] == 'a' || di.text[0] == 's')))))) {
+                arg_bytes = 0;
             }
 
             addr += di.length;
