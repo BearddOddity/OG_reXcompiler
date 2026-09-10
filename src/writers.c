@@ -280,7 +280,8 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
             FunctionNode* n = ctx->graph.functions.vals[i];
             if (!fn_is_import(n)) continue;
             fprintf(im, "#if defined(__GNUC__) || defined(__clang__)\n__attribute__((weak))\n#endif\n"
-                        "void %s(RecompCtx* c) { (void)c; rex_unimplemented(\"%s\", 0); }\n", n->name, n->name);
+                        "void %s(RecompCtx* c) { rex_unimplemented(\"%s\", 0); c->esp += 4u; }\n",
+                        n->name, n->name);
             sb_addf(&decls, "void %s(RecompCtx* c);\n", n->name);
         }
         fclose(im);
@@ -298,7 +299,8 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
             const XbeKernelImport* k = &xbe->kernel_imports.data[i];
             fprintf(kt, "  case %d: __imp__%s(c); return;\n", k->ordinal, k->name);
         }
-        fprintf(kt, "  default: rex_unimplemented(\"kernel ordinal\", 0x80000000u | ordinal); return;\n  }\n}\n");
+        fprintf(kt, "  default: rex_unimplemented(\"kernel ordinal\", 0x80000000u | ordinal);\n"
+                    "           c->esp += 4u; return;   /* pop the return slot even when unhandled */\n  }\n}\n");
         fclose(kt);
     }
 
