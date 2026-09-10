@@ -36,7 +36,7 @@ typedef struct {
     uint32_t jump_address;
     uint32_t table_address;
     uint8_t  index_register;
-    VEC(uint32_t) targets;
+    U32Vec targets;
 } JumpTable;
 
 struct FunctionNode;
