@@ -44,25 +44,30 @@ PPC-specific and was re-derived, not transliterated.
   code in gap-fill regions). No C compiler in this environment to compile-test
   the output; emitter verified by 41 unit tests on emitted-text patterns.
 
-## Runtime (`runtime/*.c`, `Emit/ImageWriter.cs`) — done (skeleton)
+## Runtime (`runtime/*.c`, `Emit/ImageWriter.cs`) — done, COMPILE-VERIFIED
 
-`ogxbox emit` now writes a **buildable tree**: `CMakeLists.txt` +
-`ogxbox_runtime.{h,c}` (RAM alloc, `rex_dispatch` binary search, `rex_boot`) +
-`ogxbox_kernel.c` (starter xboxkrnl HLE — pool alloc, `DbgPrint`, `KeBugCheck`,
-`RtlInit*`) + `ogxbox_main.c` + `recomp_image.{c,bin}` (XBE sections as a flat
-blob + a C loader that maps them to their VAs). Not yet compiled — no C
-compiler in the work environment.
+`ogxbox emit` writes a **buildable tree**: `CMakeLists.txt` +
+`ogxbox_runtime.{h,c}` (64 MB guest RAM, `rex_dispatch` with kernel-ordinal
+routing, `rex_boot`) + `ogxbox_kernel.c` (starter xboxkrnl HLE — pool/heap,
+thread creation via Win32, events, time, RTL, debug) + `ogxbox_main.c` +
+`recomp_image.{c,bin}` (XBE sections as a flat blob + a VA-map loader) +
+`recomp_kthunks.c` (ordinal → `__imp__`).
+
+**Verified toolchain:** clang-cl (LLVM 22) + VS 18 BuildTools + Windows SDK
+10.0.26100. `INCLUDE` = `<MSVC>/include;<SDK>/{ucrt,shared,um}`, `LIB` =
+`<MSVC>/lib/x64;<SDK>/Lib/.../{ucrt,um}/x64`. Full X-Men recompile: 45 C files /
+~19 MB, **0 errors**, links to `recomp.exe`, **runs** — guest boots, executes
+its startup path, calls kernel imports.
 
 ## Remaining work, in order
 
-1. **Compile-verify** the emitted C on a box with a C compiler; fix what breaks.
-2. Grow `ogxbox_kernel.c` into a real kernel layer (object table, thread
-   scheduler, VFS/FATX, D3D8-HLE graphics, DirectSound) — this is the bulk of a
-   working port and much of it exists in the X-Men repo's C already.
-3. **Shrink the ~20k pending** — more x86 jump-table forms, `functionPointerScan`,
-   Merge vacancy absorption. (Merge second-chance resolution done: +483 sealed.)
-4. Fill the emitter tail (cmpxchg8b, SSE) — currently 99.6%.
-5. `ProjectRecompiler` multi-module driver (low value for monolithic XBEs).
+1. Grow `ogxbox_kernel.c` into a real kernel — object table, proper dispatcher
+   objects, VFS/FATX, D3D8-HLE graphics, DirectSound. This is the bulk of a
+   playable port; much exists as C in the X-Men repo.
+2. **Shrink the ~20k pending** — more x86 jump-table forms, `functionPointerScan`,
+   Merge vacancy absorption. (Merge second-chance done: +483 sealed.)
+3. Fill the emitter tail (cmpxchg8b, SSE) — currently 99.6%.
+4. `ProjectRecompiler` multi-module driver (low value for monolithic XBEs).
 
 ## x86 jump-table patterns (for `FunctionScanner`)
 

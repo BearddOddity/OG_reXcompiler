@@ -38,6 +38,22 @@ across OG Xbox titles.
 accurate x86/x64 disassembler with first-class flags and operand info, which
 the deferred-EFLAGS miscompile class needs.
 
+## Usage
+
+```
+ogxbox analyze <game.xbe> -o out [--config title.toml]   # analysis only -> functions.json etc.
+ogxbox emit    <game.xbe> -o out [--config title.toml]   # + the C recompilation
+```
+
+`emit` produces a `cmake`-buildable tree: `recomp_*.c`, `recomp_decls.h`,
+`recomp_dispatch.c`, `recomp_kthunks.c`, `recomp_imports.c`,
+`recomp_image.{c,bin}`, `ogxbox_{runtime,kernel,main}.c`, `ogxbox_runtime.h`,
+`CMakeLists.txt`. `recomp_image.bin` must sit next to the built executable.
+
+Verified with clang-cl (LLVM 22) + VS BuildTools + Windows SDK: the full X-Men
+Legends recompilation (18.7k functions, 935k instructions) compiles with 0
+errors and runs.
+
 ## License
 
 This project's own code: see `LICENSE` (TBD). Portions derived from ReXGlue
