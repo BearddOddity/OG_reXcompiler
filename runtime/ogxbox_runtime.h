@@ -173,6 +173,8 @@ void rex_dispatch_guarded(RecompCtx* c, uint32_t target);
 void rex_enter(uint32_t guest_addr);
 void rex_leave(void);
 void rex_backtrace(void);
+void rex_call_balance(uint32_t site, uint32_t target,
+                      uint32_t sp0, uint32_t sp1, uint32_t bp0, uint32_t bp1);
 #define REX_ENTER(a) rex_enter((a))
 #define REX_LEAVE()  rex_leave()
 #else

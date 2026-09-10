@@ -88,6 +88,26 @@ int rex_has_fn(uint32_t addr) { return rex_lookup(addr) != 0; }
 void rex_kernel_dispatch(RecompCtx* c, unsigned int ordinal);  /* recomp_kthunks.c */
 
 #ifdef REX_TRACE
+/* Stack-balance check on direct guest->guest calls. After `call sub_X`, a
+ * correct callee has left esp at _sp0 + N (N = its `ret N` arg bytes, i.e.
+ * 0..~64). Anything outside a sane band means the callee (or its subtree)
+ * leaked or over-popped the guest stack — the recurring recomp corruption. */
+void rex_call_balance(uint32_t site, uint32_t target,
+                      uint32_t sp0, uint32_t sp1, uint32_t bp0, uint32_t bp1) {
+    int32_t sd = (int32_t)(sp1 - sp0);
+    int bad_sp = !(sd >= 0 && sd <= 64);               /* plausible ret N */
+    int bad_bp = (bp1 != bp0) && target != 0x003432A8u; /* _SEH_prolog4 sets ebp on purpose */
+    if (!bad_sp && !bad_bp) return;
+    static uint64_t seen[2048]; static int nseen;
+    uint64_t key = ((uint64_t)site << 32) | target;
+    for (int i = 0; i < nseen; i++) if (seen[i] == key) return;
+    if (nseen < 2048) seen[nseen++] = key;
+    fprintf(stderr, "[ogxbox] STACK: call 0x%08X -> sub_%08X", site, target);
+    if (bad_sp) fprintf(stderr, "  esp %+d (0x%08X->0x%08X)", sd, sp0, sp1);
+    if (bad_bp) fprintf(stderr, "  ebp 0x%08X->0x%08X", bp0, bp1);
+    fputc('\n', stderr);
+}
+
 /* Callee-saved register check across indirect calls (ebx/esi/edi/ebp are
  * callee-saved under cdecl/stdcall/thiscall). A lifted stub that doesn't
  * restore them silently corrupts its caller. Deduped per target. */

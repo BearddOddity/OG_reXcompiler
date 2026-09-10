@@ -526,9 +526,17 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
                  * stack slot must still exist or every stack-arg read is off by
                  * one dword. HLE handlers account for the same slot. */
                 const char* nm = name_of ? name_of(name_ctx, di.target) : NULL;
+                line(&e, "#ifdef REX_TRACE");
+                line(&e, "{ uint32_t _sp0 = c->esp, _bp0 = c->ebp;");
                 linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
                 if (nm) linef(&e, "%s(c);", nm);
                 else linef(&e, "rex_dispatch(c, 0x%08Xu);", di.target);
+                linef(&e, "rex_call_balance(0x%08Xu, 0x%08Xu, _sp0, c->esp, _bp0, c->ebp); }", addr, di.target);
+                line(&e, "#else");
+                linef(&e, "PUSH32(c, 0x%08Xu);", addr + di.length);
+                if (nm) linef(&e, "%s(c);", nm);
+                else linef(&e, "rex_dispatch(c, 0x%08Xu);", di.target);
+                line(&e, "#endif");
             }
             else if (di.flow == FLOW_INDIRECT_CALL && have_raw) {
                 char t[256]; R(&r, 0, t, sizeof t);
