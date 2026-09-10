@@ -311,17 +311,40 @@ The SDK runtime is now title-agnostic:
 - `MEM*` wrap RAM addresses below `0x40000000` mod 64 MB (`REX_WRAP`) — the
   NV2A's 26-bit bus.
 
-**Current wall:** with all of the above the recompiled thread runs ~950
-functions into MSVC C++ static init and hits a NULL virtual call
-(`sub_00123490` → `call [[node+4]+4]`, vtable slot on an object whose ctor
-never installed it) followed by `KeBugCheck(0)` — the game's own assert. A
-sibling tree lookup (`sub_001186A0`) also spins on the same uninitialised
-container; capping it via a manual override only moves the failure downstream.
+### `phase_coalesce` — un-splitting the config function list (commits e21e5ab, 118bcdd)
 
-This is the C++ **static-initializer-order** problem: the recompiled `_initterm`
-walk registers fewer subsystems than the original, so later code finds blank
-entries. The X-Men recomp's `docs/TYPE_DESCRIPTOR.md` analyses the identical
-wall (the Alchemy `SubsystemRegistry` pool bootstrap) and records the fix that
-broke it — a `-1`-marker guard in `sub_0020E547`. Next: find the ctor(s) the
-recompiled order drops, or replay the registration sequence by hand (that
-doc lists it: `sub_00209650(&table)` ~25 times inside `sub_00236500`).
+`configs/xmen-legends-functions.toml` (from the disassembler's `functions.json`)
+lists some functions' cold paths and shared epilogues as separate `[functions]`
+entries. `discover_one` clips a config function's blocks at its declared end, so
+honouring a split truncates the real function: a local `jz cold_path` sitting
+past the hot-path `ret` was lowered as a *tail dispatch* that returns without
+unwinding `sub esp, N` — a guest-stack leak on every call. Accumulated across
+the `_initterm` loop in `sub_001A3554`, plus a clobbered loop-cursor register,
+this walked the C++ ctor table off its end into an infinite loop
+(`sub_001186A0`) — the wall the paragraph below used to describe.
+
+`phase_coalesce` runs right after `phase_register` (nodes still `ST_REGISTERED`).
+It folds an adjacent config fragment into its predecessor when the fragment does
+not open with a real MSVC prologue **and** the predecessor branches into it: a
+conditional `jcc` to the fragment base, an unconditional short `jmp` a few bytes
+past its own end (across a mis-attributed orphan instruction), or a fall-through
+with no intervening `ret`/`jmp`/`int3` once the node has already absorbed one
+fragment. Iterates for 3+-way splits. On X-Men: 6,579 fragments folded, emitted
+function count 33,678 → 26,765 (≈ the authoritative count), guest execution
+962 → ~12,600 calls.
+
+**Current wall:** the recompiled thread clears the `_initterm` walks and reaches
+`sub_00216210` (`sub_00011E40` _cinit → `sub_00239E50` → `sub_00236500`), a
+bounded 47-iteration loop building the Alchemy subsystem-object array. It reads
+uninitialised globals — `[0x5bc51c]` (a string pointer compared with
+`repe cmpsb`), `[0x5bc544]`, `[0x5bc508]` — and hangs (guest-call count frozen,
+`_SEH_epilog4` last-entered), most likely an infinite SEH unwind
+(`sub_003432F4` / `_local_unwind` walking a self-referential `fs:[0]` chain) or
+a NULL-vtable `call [edx+0x178]` on a failed-alloc object.
+
+Still the C++ **static-initializer-order** problem: the recompiled registration
+order leaves those singletons unset. The X-Men recomp's `docs/TYPE_DESCRIPTOR.md`
+analyses the identical Alchemy `SubsystemRegistry` wall and records the fix that
+broke it — a `-1`-marker guard in `sub_0020E547`. Next: bracket the `fs:[0]`
+chain / `sub_003432F4` recursion, or find the ctor(s) the recompiled order
+drops (`sub_00209650(&table)` ~25 times inside `sub_00236500`).
