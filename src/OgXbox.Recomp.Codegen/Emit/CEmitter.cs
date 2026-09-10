@@ -103,7 +103,9 @@ public sealed class CEmitter
 
         var code = new StringBuilder();
         code.Append("void ").Append(node.Name).Append("(RecompCtx* c) {\n");
+        code.Append("\tREX_ENTER(0x").Append(node.Base.ToString("X8")).Append("u);\n");
         code.Append(body);
+        code.Append("\tREX_LEAVE();\n");   // fall-off-the-end path
         code.Append("}\n");
 
         return new EmitResult
@@ -295,7 +297,7 @@ public sealed class CEmitter
 
             case Mnemonic.Call: return Call(b, insn, addr);
             case Mnemonic.Ret or Mnemonic.Retf:
-                Line(b, "return;");
+                Line(b, "REX_LEAVE(); return;");
                 return true;
             case Mnemonic.Jmp: return Jmp(b, insn, addr, node, emitted);
 
@@ -634,18 +636,18 @@ public sealed class CEmitter
             }
             else if (_nameOf(target) is { } name)
             {
-                Line(b, $"{name}(c); return; /* tail call */");
+                Line(b, $"REX_LEAVE(); {name}(c); return; /* tail call */");
             }
             else
             {
                 // jmp into another function's body / an unregistered address:
                 // route through the runtime dispatcher (loud fail if unmapped).
-                Line(b, $"rex_dispatch(c, 0x{target:X8}u); return; /* mid-function tail jump */");
+                Line(b, $"REX_LEAVE(); rex_dispatch(c, 0x{target:X8}u); return; /* mid-function tail jump */");
             }
         }
         else
         {
-            Line(b, $"rex_dispatch(c, {R(insn, 0, addr)}); return;");
+            Line(b, $"REX_LEAVE(); rex_dispatch(c, {R(insn, 0, addr)}); return;");
         }
         return true;
     }
@@ -656,7 +658,7 @@ public sealed class CEmitter
         if (emitted.Contains(target))
             Line(b, $"if ({Cond(insn.Mnemonic)}) goto loc_{target:X};");
         else
-            Line(b, $"if ({Cond(insn.Mnemonic)}) {{ rex_dispatch(c, 0x{target:X8}u); return; }}");
+            Line(b, $"if ({Cond(insn.Mnemonic)}) {{ REX_LEAVE(); rex_dispatch(c, 0x{target:X8}u); return; }}");
         return true;
     }
 

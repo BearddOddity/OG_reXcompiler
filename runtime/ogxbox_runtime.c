@@ -10,9 +10,46 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <windows.h>
 
 uint8_t*  g_guest_ram = 0;
 uint32_t  g_guest_ram_size = 0;
+
+/* A hard fault in generated code (bad guest pointer) never reaches
+ * rex_unimplemented, so catch it here and dump the guest backtrace. */
+static LONG WINAPI rex_seh_filter(EXCEPTION_POINTERS* ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_ACCESS_VIOLATION) {
+        ULONG_PTR at = ep->ExceptionRecord->ExceptionInformation[1];
+        int write = (int)ep->ExceptionRecord->ExceptionInformation[0];
+        uint32_t guest = (g_guest_ram && (uint8_t*)at >= g_guest_ram &&
+                          (uint8_t*)at < g_guest_ram + 0x100000000ull)
+                         ? (uint32_t)((uint8_t*)at - g_guest_ram) : 0xFFFFFFFFu;
+        fprintf(stderr, "[ogxbox] ACCESS VIOLATION %s host 0x%p", write ? "write" : "read", (void*)at);
+        if (guest != 0xFFFFFFFFu) fprintf(stderr, " (guest 0x%08X)", guest);
+        fprintf(stderr, "\n");
+        rex_backtrace();
+        return EXCEPTION_EXECUTE_HANDLER;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void rex_run_guarded(void (*fn)(RecompCtx*), RecompCtx* c) {
+    __try { fn(c); }
+    __except (rex_seh_filter(GetExceptionInformation())) {
+        fprintf(stderr, "[ogxbox] guest aborted\n");
+    }
+}
+
+void rex_dispatch(RecompCtx* c, uint32_t target);
+
+void rex_dispatch_guarded(RecompCtx* c, uint32_t target) {
+    __try { rex_dispatch(c, target); }
+    __except (rex_seh_filter(GetExceptionInformation())) {
+        fprintf(stderr, "[ogxbox] guest thread aborted\n");
+    }
+}
 
 /* The generated dispatch table (recomp_dispatch.c). Sorted by guest address. */
 typedef struct { uint32_t addr; void (*fn)(RecompCtx*); } RexDispatchEntry;
@@ -21,6 +58,7 @@ extern const uint32_t         g_rex_dispatch_count;
 
 void rex_unimplemented(const char* what, uint32_t addr) {
     fprintf(stderr, "[ogxbox] unimplemented '%s' at 0x%08X\n", what, addr);
+    rex_backtrace();
 }
 
 static void (*rex_lookup(uint32_t target))(RecompCtx*) {
@@ -67,6 +105,6 @@ int rex_boot(const char* image_bin_path) {
     ctx.esp = g_rex_initial_esp;
     ctx.fpu_cw = 0x037F;
 
-    entry(&ctx);
+    rex_run_guarded(entry, &ctx);
     return (int)ctx.eax;
 }

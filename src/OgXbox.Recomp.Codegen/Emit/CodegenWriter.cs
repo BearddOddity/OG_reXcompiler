@@ -126,8 +126,9 @@ public static class CodegenWriter
         sb.AppendLine("project(recomp C)");
         sb.AppendLine("set(CMAKE_C_STANDARD 11)");
         sb.AppendLine("add_executable(recomp");
-        sb.AppendLine("  ogxbox_main.c ogxbox_runtime.c ogxbox_kernel.c");
+        sb.AppendLine("  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c");
         sb.AppendLine("  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c");
+        sb.AppendLine("# add -DREX_TRACE to CMAKE_C_FLAGS for a guest backtrace on unresolved calls");
         for (int i = 0; i < cFileCount; i++)
             sb.AppendLine($"  recomp_{i:D4}.c");
         sb.AppendLine(")");
@@ -183,7 +184,7 @@ public static class CodegenWriter
         var asmDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
         foreach (var name in new[]
                  {
-                     "ogxbox_runtime.h", "ogxbox_runtime.c",
+                     "ogxbox_runtime.h", "ogxbox_runtime.c", "ogxbox_trace.c",
                      "ogxbox_kernel.c", "ogxbox_main.c",
                  })
         {

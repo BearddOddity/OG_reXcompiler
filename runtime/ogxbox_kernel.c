@@ -124,7 +124,7 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
     ctx.fpu_cw = 0x037F;
     /* push start_context as the routine's single arg, then dispatch */
     PUSH32(&ctx, a.start_context);
-    rex_dispatch(&ctx, a.start_routine);
+    rex_dispatch_guarded(&ctx, a.start_routine);
     return ctx.eax;
 }
 
@@ -133,6 +133,17 @@ static DWORD WINAPI guest_thread_trampoline(LPVOID p) {
 void __imp__PsCreateSystemThreadEx(RecompCtx* c) {
     uint32_t phandle = arg(c,1), ptid = arg(c,5);
     uint32_t start   = arg(c,6), context = arg(c,7);
+    if (!start) {
+        /* StartRoutine came through NULL — an earlier init HLE that should
+         * have populated a function-pointer table is still a stub. Log and
+         * skip the thread rather than dispatch to 0. */
+        fprintf(stderr, "[ogxbox] PsCreateSystemThreadEx: NULL StartRoutine "
+                        "(missing init HLE); skipping thread\n");
+        rex_backtrace();
+        wr32(phandle, 0);
+        ret_stdcall(c, 0xC0000005u, 10);
+        return;
+    }
 
     uint32_t stack_bytes = 0x40000;                 /* 256 KB guest stack */
     uint32_t stack_base  = pool_alloc(stack_bytes);
@@ -142,6 +153,7 @@ void __imp__PsCreateSystemThreadEx(RecompCtx* c) {
 
     DWORD tid = 0;
     HANDLE h = CreateThread(NULL, 0, guest_thread_trampoline, ga, 0, &tid);
+    fprintf(stderr, "[ogxbox] thread: start=0x%08X ctx=0x%08X -> tid %lu\n", start, context, tid);
     wr32(phandle, (uint32_t)(uintptr_t)h);
     wr32(ptid, tid);
     ret_stdcall(c, h ? 0 : 0xC0000001u, 10);

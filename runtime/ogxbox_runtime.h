@@ -128,6 +128,29 @@ void rex_dispatch(RecompCtx* c, uint32_t target);
  * Returns the guest's eax at exit, or a negative error. */
 int rex_boot(const char* image_bin_path);
 
+/* Run a guest function under a structured-exception guard that dumps the
+ * backtrace on an access violation. Used for the entry point and each thread. */
+void rex_run_guarded(void (*fn)(RecompCtx*), RecompCtx* c);
+void rex_dispatch_guarded(RecompCtx* c, uint32_t target);
+
+/* --- guest call trace (compile with -DREX_TRACE) -----------------------------
+ * Every generated function calls REX_ENTER(its addr) on entry and REX_LEAVE()
+ * before each return, maintaining a per-thread ring of guest addresses.
+ * rex_backtrace() dumps it (newest first, resolved to sub_XXXXXXXX names) and
+ * is called automatically from an unresolved dispatch / unimplemented import.
+ */
+#ifdef REX_TRACE
+void rex_enter(uint32_t guest_addr);
+void rex_leave(void);
+void rex_backtrace(void);
+#define REX_ENTER(a) rex_enter((a))
+#define REX_LEAVE()  rex_leave()
+#else
+#define REX_ENTER(a) ((void)0)
+#define REX_LEAVE()  ((void)0)
+static inline void rex_backtrace(void) {}
+#endif
+
 #ifdef __cplusplus
 }
 #endif
