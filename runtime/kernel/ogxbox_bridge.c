@@ -1766,7 +1766,11 @@ static bridge_func_t bridge_for_ordinal(ULONG ordinal)
     /* Pool */
     case  15: return bridge_ExAllocatePool;
     case  16: return bridge_ExAllocatePoolWithTag;
-    case  24: return bridge_ExQueryPoolBlockSize;
+    /* Ordinal 23 is ExQueryPoolBlockSize (1 arg); 24 is ExQueryNonVolatileSetting
+     * (5 args). The upstream X-Men bridge had 24 mapped to the pool handler —
+     * a 16-byte under-pop that corrupted the caller's frame. Route 24 to the
+     * SDK's __imp__ExQueryNonVolatileSetting via the fallback (NULL here). */
+    case  23: return bridge_ExQueryPoolBlockSize;
 
     /* IRQL */
     case 129: return bridge_KeRaiseIrqlToDpcLevel;

@@ -1,0 +1,18 @@
+# X-Men Legends (World) — per-title recompiler config.
+#
+# The recompiler's fnptrscan pass recovers ~5,500 function pointers from the
+# _initterm ctor tables and callback arrays automatically. `seeds` here are the
+# few entry points nothing points at even from data:
+#   - the CRT thread-startup path (handed to PsCreateSystemThreadEx as a value)
+#   - a handful of engine helpers reached only through .text-internal jump
+#     tables the scanner does not model
+
+seeds = [
+  # CRT / thread startup
+  0x1A3639, 0x1A23F3, 0x1A35AC, 0x1A3554, 0x11E40,
+  0x342B3C, 0x343862, 0x346743, 0x342BFC,
+
+  # engine helpers seen as unresolved indirect targets
+  0x1E9380, 0x374A4B, 0x374A56, 0x37207A,
+  0x340CDE, 0x340D86,
+]

@@ -94,3 +94,66 @@ void sigscan(BinaryView* bv, const int* pattern, size_t plen, int entry_offset, 
         }
     }
 }
+
+/* ---- data function-pointer scan ---------------------------------------- */
+
+/* First byte(s) of a plausible function. Covers MSVC prologues, the tiny
+ * `push imm; call rel; pop; ret` ctor stubs, and jump thunks. */
+static int looks_like_prologue(const uint8_t* p, size_t avail) {
+    if (avail < 3) return 0;
+    switch (p[0]) {
+        case 0x55:                       /* push ebp */
+            return 1;
+        case 0x53: case 0x56: case 0x57:  /* push ebx/esi/edi — usually part of a prologue run */
+            return p[1] == 0x53 || p[1] == 0x56 || p[1] == 0x57 || p[1] == 0x55 ||
+                   p[1] == 0x8B || (p[1] == 0x83 && p[2] == 0xEC) || (p[1] == 0x81 && p[2] == 0xEC);
+        case 0x6A:                        /* push imm8 (ctor stub `push -1; push imm; ...`) */
+            return p[1] == 0xFF && p[2] == 0x68;
+        case 0x68:                        /* push imm32; call ... (ctor stub / SEH prolog) */
+            return p[5] == 0xE8 || p[5] == 0x68 || p[5] == 0xFF;
+        case 0xB8:                        /* mov eax, imm32; ... (SEH `mov eax, scopetable`) */
+            return p[5] == 0xE8 || p[5] == 0x50 || p[5] == 0xC3;
+        case 0xE9:                        /* jmp rel32 (thunk run) */
+        case 0xEB:
+            return 1;
+        case 0x8B: return p[1] == 0xFF && (p[2] == 0x55 || p[2] == 0x56 || p[2] == 0x53 || p[2] == 0x8B); /* mov edi,edi hotpatch pad + real prologue */
+        case 0x83: return p[1] == 0xEC;   /* sub esp, imm8 */
+        case 0x81: return p[1] == 0xEC;   /* sub esp, imm32 */
+        case 0xFF: return p[1] == 0x25;   /* jmp [mem] (import thunk) */
+        default: return 0;
+    }
+}
+
+/* Is `a` inside a section that primarily holds code (by name, not the XBE
+ * flag — XBEs mark nearly everything executable). */
+static int in_code_section(BinaryView* bv, uint32_t a) {
+    SectionView* sec = bv_find_section(bv, a);
+    return sec && !bv_is_data_section_name(sec->name);
+}
+
+void fnptrscan_run(BinaryView* bv, const CodeRegion* regions, size_t nregions, U32Vec* out) {
+    (void)regions; (void)nregions;
+    u32map seen; u32map_init(&seen, 8192);
+    for (size_t s = 0; s < bv->sections.len; s++) {
+        SectionView* sec = &bv->sections.data[s];
+        if (sec->size < 4 || !bv_is_data_section_name(sec->name)) continue;
+        for (uint32_t off = 0; off + 4 <= sec->size; off += 4) {
+            uint32_t v = rd32(sec->data + off);
+            if (v & 3) continue;                       /* code is 4-byte aligned here */
+            if (!in_code_section(bv, v)) continue;
+            if (u32map_has(&seen, v)) continue;
+            size_t avail;
+            const uint8_t* p = bv_translate(bv, v, &avail);
+            if (!p || avail < 4 || !looks_like_prologue(p, avail)) continue;
+            /* Require a table context: a neighbouring slot also points to code.
+             * Kills isolated data bytes that happen to look like a prologue. */
+            int nbr = 0;
+            if (off >= 4) { uint32_t pv = rd32(sec->data + off - 4); nbr |= in_code_section(bv, pv); }
+            if (off + 8 <= sec->size) { uint32_t nv = rd32(sec->data + off + 4); nbr |= in_code_section(bv, nv); }
+            if (!nbr) continue;
+            u32set_add(&seen, v);
+            vec_push(out, v);
+        }
+    }
+    u32map_free(&seen);
+}

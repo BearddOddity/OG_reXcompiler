@@ -323,6 +323,13 @@ static int emit_one(E* e, RI* r, uint32_t addr) {
             return 1;
         case ZYDIS_MNEMONIC_CLD: line(e, "c->df = 0;"); return 1;
         case ZYDIS_MNEMONIC_STD: line(e, "c->df = 1;"); return 1;
+        case ZYDIS_MNEMONIC_RDTSC:
+            line(e, "{ uint64_t _t = rex_rdtsc(); c->eax = (uint32_t)_t; c->edx = (uint32_t)(_t >> 32); }");
+            return 1;
+        case ZYDIS_MNEMONIC_CPUID:
+            /* enough for CRT feature detection: no SSE/CMOV advertised */
+            line(e, "{ uint32_t _l = c->eax; c->eax = _l ? 0 : 1; c->ebx = 0x756E6547; c->edx = 0x49656E69; c->ecx = 0x6C65746E; }");
+            return 1;
         case ZYDIS_MNEMONIC_CLC: line(e, "c->cf = 0;"); return 1;
         case ZYDIS_MNEMONIC_STC: line(e, "c->cf = 1;"); return 1;
         case ZYDIS_MNEMONIC_CMC: line(e, "c->cf = !c->cf;"); return 1;

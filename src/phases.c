@@ -227,6 +227,18 @@ void phase_discover(CodegenContext* ctx) {
     FunctionScanner fs;
     fs_init(&fs, ctx->db, ctx->scan.code_regions.data, ctx->scan.code_regions.len);
 
+    /* Function pointers stored in data sections — MSVC _initterm ctor tables,
+     * callback arrays, dispatch tables the recursive scanner never reaches.
+     * DISCOVERED authority: real extent detection and merge/gapfill win. */
+    {
+        U32Vec fps = {0};
+        fnptrscan_run(ctx->bv, ctx->scan.code_regions.data, ctx->scan.code_regions.len, &fps);
+        for (size_t i = 0; i < fps.len; i++)
+            fg_add_function(g, fps.data[i], 0, AUTH_DISCOVERED, NULL, 1);
+        fprintf(stderr, "  [fnptrscan] %zu data function pointers seeded\n", fps.len);
+        vec_free(&fps);
+    }
+
     long last_count = -1;
     for (int iter = 0; iter < 64; iter++) {
         long count = (long)fg_count(g);

@@ -24,4 +24,10 @@ void vtscan_free(VTableInfoVec* v);
  * (+ entry_offset) in out. */
 void sigscan(BinaryView* bv, const int* pattern, size_t plen, int entry_offset, U32Vec* out);
 
+/* Data function-pointer scan: every 4-byte-aligned u32 in a data section that
+ * points at a plausible function prologue inside a known code region. Catches
+ * MSVC _initterm ctor tables, dispatch tables, and callback arrays the
+ * recursive scanner never reaches. Appends unique addresses to out. */
+void fnptrscan_run(BinaryView* bv, const CodeRegion* regions, size_t nregions, U32Vec* out);
+
 #endif

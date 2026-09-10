@@ -257,10 +257,18 @@ void __imp__ExQueryNonVolatileSetting(RecompCtx* c) {
 /* --- files: stubbed until the VFS lands (Phase B) --------------------- */
 void __imp__NtOpenFile(RecompCtx* c)  { wr32(arg(c,1), 0); ret_stdcall(c, 0xC0000034u /* NAME_NOT_FOUND */, 6); }
 void __imp__NtCreateFile(RecompCtx* c){ wr32(arg(c,1), 0); ret_stdcall(c, 0xC0000034u, 11); }
-void __imp__NtReadFile(RecompCtx* c)  { ret_stdcall(c, 0xC0000011u /* END_OF_FILE */, 9); }
+void __imp__NtReadFile(RecompCtx* c)  { ret_stdcall(c, 0xC0000011u /* END_OF_FILE */, 8); }
+void __imp__NtWriteFile(RecompCtx* c) { ret_stdcall(c, 0, 8); }
 void __imp__NtQueryVolumeInformationFile(RecompCtx* c) { ret_stdcall(c, 0xC0000034u, 5); }
 void __imp__NtQueryInformationFile(RecompCtx* c)       { ret_stdcall(c, 0xC0000034u, 5); }
 void __imp__NtQueryFullAttributesFile(RecompCtx* c)    { ret_stdcall(c, 0xC0000034u, 2); }
+void __imp__NtQueryDirectoryFile(RecompCtx* c)         { ret_stdcall(c, 0xC0000034u, 10); }
+void __imp__NtSetInformationFile(RecompCtx* c)         { ret_stdcall(c, 0, 5); }
+void __imp__NtDeviceIoControlFile(RecompCtx* c)        { ret_stdcall(c, 0xC0000034u, 10); }
+void __imp__NtFsControlFile(RecompCtx* c)              { ret_stdcall(c, 0xC0000034u, 10); }
+void __imp__NtDeleteFile(RecompCtx* c)                 { ret_stdcall(c, 0xC0000034u, 1); }
+void __imp__NtFlushBuffersFile(RecompCtx* c)           { ret_stdcall(c, 0, 2); }
+void __imp__IoCreateFile(RecompCtx* c)                 { wr32(arg(c,1), 0); ret_stdcall(c, 0xC0000034u, 10); }
 
 /* --- object / symbolic link ------------------------------------------- */
 /* NtOpenSymbolicLinkObject(PHANDLE, POBJECT_ATTRIBUTES) — the game resolves

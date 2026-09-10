@@ -92,6 +92,16 @@ void     rex_set_fs_base(uint32_t va);
 
 static inline uint32_t rex_mask(int w) { return w == 32 ? 0xFFFFFFFFu : ((1u << w) - 1u); }
 
+/* rdtsc — a monotonically increasing cycle-ish counter for CRT/engine timing. */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static inline uint64_t rex_rdtsc(void) { return __rdtsc(); }
+#elif defined(__i386__) || defined(__x86_64__)
+static inline uint64_t rex_rdtsc(void) { return __builtin_ia32_rdtsc(); }
+#else
+static inline uint64_t rex_rdtsc(void) { static uint64_t t; return t += 1000; }
+#endif
+
 static inline void rex_flags_logic(RecompCtx* c, uint64_t r, int w) {
     uint32_t m = rex_mask(w); uint32_t v = (uint32_t)(r & m);
     c->cf = 0; c->of = 0;
