@@ -32,8 +32,9 @@ endif()
 set(OGX_GEN   "${CMAKE_CURRENT_BINARY_DIR}/gen")
 set(OGX_STAMP "${OGX_GEN}/.emit.stamp")
 set(_inputs "${OGX_XBE}" "${OGX_MANIFEST}" "${OGX_EXE}")
-file(GLOB_RECURSE _rt CONFIGURE_DEPENDS "${OGX_SDK_ROOT}/runtime/*")
-list(APPEND _inputs ${_rt})
+file(GLOB_RECURSE _rt  CONFIGURE_DEPENDS "${OGX_SDK_ROOT}/runtime/*")
+file(GLOB_RECURSE _cfg CONFIGURE_DEPENDS "${OGX_SDK_ROOT}/configs/*")   # the manifest's includes / manual_file
+list(APPEND _inputs ${_rt} ${_cfg})
 
 set(_stale TRUE)
 if(EXISTS "${OGX_STAMP}")

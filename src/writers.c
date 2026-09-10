@@ -44,7 +44,19 @@ void write_image(const Xbe* xbe, const char* out_dir) {
         secs[j] = k;
     }
 
+    /* XBE header page. The CRT startup reads fields straight out of the loaded
+     * header at guest VA base_address: dwPeHeapReserve (+0x134) / dwPeHeapCommit
+     * (+0x138) size the process heap, dwInitFlags (+0x124), dwSizeofHeaders
+     * (+0x108). Without it the heap is created with size 0 and the first malloc
+     * dereferences a null heap. Map [base, first-section-VA), capped at the
+     * real header size. */
+    uint32_t hdr_map = xbe->headers_size;
+    uint32_t first_sec_va = m ? secs[0]->virtual_addr : xbe->base_address + 0x1000u;
+    if (hdr_map > first_sec_va - xbe->base_address) hdr_map = first_sec_va - xbe->base_address;
+    if ((size_t)hdr_map > xbe->raw_len) hdr_map = (uint32_t)xbe->raw_len;
+
     FILE* blob = open_out(out_dir, "recomp_image.bin");
+    if (hdr_map) fwrite(xbe->raw, 1, hdr_map, blob);
     for (size_t i = 0; i < m; i++)
         fwrite(xbe->raw + secs[i]->raw_addr, 1, secs[i]->raw_size, blob);
     fclose(blob);
@@ -59,12 +71,17 @@ void write_image(const Xbe* xbe, const char* out_dir) {
     fprintf(f, "typedef struct { unsigned int va, file_off, size; } RexSection;\n");
     fprintf(f, "static const RexSection g_rex_sections[] = {\n");
     long off = 0;
+    if (hdr_map) {
+        fprintf(f, "  { 0x%08Xu, %ldu, 0x%Xu },  /* XBE header */\n",
+                xbe->base_address, off, hdr_map);
+        off += hdr_map;
+    }
     for (size_t i = 0; i < m; i++) {
         fprintf(f, "  { 0x%08Xu, %ldu, 0x%Xu },  /* %s */\n",
                 secs[i]->virtual_addr, off, secs[i]->raw_size, secs[i]->name);
         off += secs[i]->raw_size;
     }
-    fprintf(f, "};\nstatic const unsigned int g_rex_section_count = %zu;\n\n", m);
+    fprintf(f, "};\nstatic const unsigned int g_rex_section_count = %zu;\n\n", m + (hdr_map ? 1 : 0));
 
     /* kernel import thunk slots: {slot VA, ordinal} — the runtime's thunkfix
      * patches DATA-export slots to the kernel data area and leaves FUNCTION

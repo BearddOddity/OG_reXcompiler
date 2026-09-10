@@ -1,9 +1,9 @@
 # X-Men Legends (World) â€” per-title recompiler config.
 #
-# includes  `xmen-legends-functions.toml` — 27,673 functions with authoritative
+# includes  `xmen-legends-functions.toml` ï¿½ 27,673 functions with authoritative
 #           start/end from the disassembler; supersedes fnptrscan for this title.
 # manual_file  per-title recomp_manual.c (hand-written overrides).
-# manual_functions  addrs the emitter must NOT emit — recomp_manual.c defines them.
+# manual_functions  addrs the emitter must NOT emit ï¿½ recomp_manual.c defines them.
 # seeds  the few entry points nothing references even from data (CRT thread start).
 
 
@@ -19,4 +19,10 @@ seeds = [
   # engine helpers seen as unresolved indirect targets
   0x1E9380, 0x374A4B, 0x374A56, 0x37207A,
   0x340CDE, 0x340D86,
+
+  # static-init ctors / thunks the analysis missed â€” reached only through
+  # _initterm tables, flagged by the boot smoke loop as "unimplemented
+  # indirect target". Without them the Alchemy subsystem registry
+  # ([0x5bbab4], [0x5bb700]) is never populated and sub_00216210 null-calls.
+  0x0C5A10, 0x3556E0, 0x3587F0,
 ]
