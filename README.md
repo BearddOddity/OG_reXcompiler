@@ -1,5 +1,8 @@
 # OG Xbox Recomp SDK
 
+Repo: `github.com/BearddOddity/OG_reXcompiler`.
+
+
 A static recompiler for original Xbox (32-bit x86) titles, built in C#. The
 analysis core is a port of ReXGlue's `rex::codegen` `FunctionGraph` design —
 the 6-phase fixed-point function-discovery pipeline — retargeted from Xbox 360
