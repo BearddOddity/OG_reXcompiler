@@ -25,7 +25,9 @@ public sealed class FunctionGraph
 
     private readonly List<CodeBuffer> _codeBuffers = new();
     private readonly Dictionary<uint, FunctionNode> _functions = new();
-    private readonly SortedDictionary<uint, FunctionNode> _functionsByBase = new();
+    // SortedList (not SortedDictionary) so Keys is an IList<uint> for O(log f)
+    // binary search in GetFunctionContaining, which the phases hammer.
+    private readonly SortedList<uint, FunctionNode> _functionsByBase = new();
     private readonly Dictionary<uint, bool> _functionHasXrefs = new();
     private readonly List<(uint Base, uint Size)> _chunks = new();
     private MemoryReader? _memoryReader;
@@ -101,13 +103,17 @@ public sealed class FunctionGraph
     /// <summary>Function containing <paramref name="addr"/> (O(log f) via the sorted base index).</summary>
     public FunctionNode? GetFunctionContaining(uint addr)
     {
-        FunctionNode? candidate = null;
-        foreach (var kv in _functionsByBase)
+        var keys = _functionsByBase.Keys;
+        int lo = 0, hi = keys.Count - 1, found = -1;
+        while (lo <= hi)
         {
-            if (kv.Key > addr) break;
-            candidate = kv.Value;
+            int mid = (lo + hi) >> 1;
+            if (keys[mid] <= addr) { found = mid; lo = mid + 1; }
+            else hi = mid - 1;
         }
-        return candidate is not null && candidate.ContainsAddress(addr) ? candidate : null;
+        if (found < 0) return null;
+        var candidate = _functionsByBase.Values[found];
+        return candidate.ContainsAddress(addr) ? candidate : null;
     }
 
     public bool IsEntryPoint(uint addr) => _functions.ContainsKey(addr);

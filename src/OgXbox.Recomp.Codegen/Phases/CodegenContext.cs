@@ -54,6 +54,7 @@ public sealed class CodegenContext
 
     public AnalysisState State { get; } = new();
     public ScanResult Scan { get; } = new();
+    public AnalysisErrors Errors { get; } = new();
 
     public static CodegenContext Create(BinaryView binary, RecompilerConfig? config = null)
     {

@@ -39,4 +39,27 @@ public class RealXbeSmokeTests
         Assert.True(textRegions.Max(r => r.Size) > 1_000_000,
             $"largest .text region only {textRegions.Max(r => r.Size)} bytes");
     }
+
+    [SkippableFact]
+    public void FullPipeline_Discovers_A_Large_Function_Set()
+    {
+        Skip.If(string.IsNullOrEmpty(XbePath) || !File.Exists(XbePath), "OGXBOX_TEST_XBE not set");
+
+        var view = BinaryView.FromXbe(Xbe.Load(XbePath!));
+        var ctx = CodegenContext.Create(view);
+        bool clean = AnalysisPipeline.Run(ctx);
+
+        int total = ctx.Graph.FunctionCount;
+        int sealed_ = ctx.Graph.SealedCount;
+        int pending = ctx.Graph.PendingCount;
+        int imports = ctx.Graph.Functions.Values.Count(n => n.IsImport);
+
+        Console.WriteLine($"[pipeline] functions={total} sealed={sealed_} pending={pending} " +
+                          $"imports={imports} clean={clean} errors={ctx.Errors.Count}");
+        if (!clean) Console.WriteLine(ctx.Errors.Report()[..Math.Min(2000, ctx.Errors.Report().Length)]);
+
+        // The X-Men archived Python pipeline reached ~1199 lifted functions from
+        // manual seeding; a fixed-point graph should find many thousands.
+        Assert.True(total > 2000, $"only {total} functions discovered");
+    }
 }

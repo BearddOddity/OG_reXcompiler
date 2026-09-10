@@ -120,7 +120,10 @@ public sealed class FunctionScanner
                     if (insn.Flow == InsnFlow.Call && insn.Target != 0)
                     {
                         result.UnresolvedBranches.Add(new(addr, insn.Target, true, false));
-                        if (!IsInternalTarget(insn.Target))
+                        // A direct `call` always denotes a callee entry point,
+                        // even when the target sits inside this function's code
+                        // region (regions are coarse before GapFill splits them).
+                        if (insn.Target != entryPoint)
                             result.ExternalCalls.Add(insn.Target);
                     }
                     addr = next;                       // calls don't end the block
