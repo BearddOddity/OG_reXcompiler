@@ -27,6 +27,7 @@ typedef struct {
     char file_path[512];
     char out_directory_path[512];
     char manual_file[512];   /* per-title recomp_manual.c, path as written in the config */
+    char hook_file[512];     /* per-title recomp_hooks.c — strong defs override weak sub_X */
     int  generate_exception_handlers;
 
     uint32_t max_jump_extension;

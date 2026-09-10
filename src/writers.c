@@ -250,6 +250,28 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
             fprintf(stderr, "[ogxbox] manual overrides: %s\n", ctx->config->manual_file);
     }
 
+    /* per-title recomp_hooks.c (config `hook_file`) — strong sub_X / __imp__sub_X
+     * defs that win over the weak REX_FN thunks. Always leave a stub so the
+     * generated CMakeLists can reference it unconditionally. */
+    {
+        char dp[1024];
+        snprintf(dp, sizeof dp, "%s/recomp_hooks.c", out_dir);
+        int have = 0;
+        if (ctx->config->hook_file[0]) {
+            if (copy_path(ctx->config->hook_file, dp) == 0) {
+                have = 1;
+                fprintf(stderr, "[ogxbox] hooks: %s\n", ctx->config->hook_file);
+            } else {
+                fprintf(stderr, "[ogxbox] warning: hook_file '%s' not found\n",
+                        ctx->config->hook_file);
+            }
+        }
+        if (!have) {
+            FILE* h = fopen(dp, "wb");
+            if (h) { fputs("/* no hooks — see config `hook_file` */\n", h); fclose(h); }
+        }
+    }
+
     /* vendored OG Xbox kernel replacement layer + its platform shim */
     char sub[1024];
     snprintf(sub, sizeof sub, "%s/kernel", out_dir);   ensure_dir(sub);
@@ -357,7 +379,7 @@ void write_codegen(CodegenContext* ctx, const Xbe* xbe, const char* out_dir,
         fprintf(cm, "include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/kernel)\n");
         fprintf(cm, "add_executable(recomp\n"
                     "  ogxbox_main.c ogxbox_runtime.c ogxbox_trace.c ogxbox_kernel.c ogxbox_kernel_glue.c\n"
-                    "  ogxbox_thunkfix.c ogxbox_tib.c recomp_manual.c\n"
+                    "  ogxbox_thunkfix.c ogxbox_tib.c recomp_manual.c recomp_hooks.c\n"
                     "  recomp_dispatch.c recomp_imports.c recomp_image.c recomp_kthunks.c\n"
                     "  kernel/kernel_ob.c kernel/kernel_thread.c kernel/kernel_sync.c kernel/kernel_rtl.c\n"
                     "  kernel/kernel_file.c kernel/kernel_io.c kernel/kernel_memory.c kernel/kernel_pool.c\n"

@@ -628,8 +628,11 @@ void emit_function(DecodedBinary* db, FunctionNode* node,
     }
     free(blocks);
 
+    /* REX_FN emits `name` as a weak thunk to `__imp__name` (the real body), so
+     * a per-title hook file can define a strong `name` that the linker picks
+     * instead — ReXGlue's "HLE a function that won't lift" lever. */
     strbuf code = {0};
-    sb_addf(&code, "void %s(RecompCtx* c) {\n", node->name);
+    sb_addf(&code, "REX_FN(%s) {\n", node->name);
     sb_addf(&code, "\tREX_ENTER(0x%08Xu);\n", node->base);
     if (e.b.data) sb_add(&code, e.b.data);
     sb_add(&code, "\tREX_LEAVE();\n}\n");

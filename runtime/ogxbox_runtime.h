@@ -138,6 +138,19 @@ static inline void rex_flags_sub(RecompCtx* c, uint64_t a, uint64_t b, uint64_t 
 void rex_unimplemented(const char* what, uint32_t addr);
 #define REX_UNIMPLEMENTED(what, addr) rex_unimplemented((what), (addr))
 
+/* Every generated function is emitted as `REX_FN(sub_X) { ... }`. On clang/gcc
+ * this makes `sub_X` a weak thunk to `__imp__sub_X` (the real body); a per-title
+ * hook file (config `hook_file`) can define a strong `sub_X` that the linker
+ * picks instead — for functions the recompiler can't lift faithfully. */
+#if defined(__clang__) || defined(__GNUC__)
+#define REX_FN(name)                                                      \
+    void __imp__##name(RecompCtx*);                                       \
+    __attribute__((weak)) void name(RecompCtx* c) { __imp__##name(c); }   \
+    void __imp__##name(RecompCtx* c)
+#else
+#define REX_FN(name) void name(RecompCtx* c)
+#endif
+
 /* Indirect jump/tail dispatch — resolves a guest address to a generated fn. */
 void rex_dispatch(RecompCtx* c, uint32_t target);
 /* Indirect call — same, but a return slot is already pushed; an unresolved

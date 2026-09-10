@@ -55,6 +55,8 @@ static void apply_table(RecompilerConfig* c, toml_table_t* t) {
     if (d.ok) { snprintf(c->file_path, sizeof c->file_path, "%s", d.u.s); free(d.u.s); }
     d = toml_string_in(t, "manual_file");
     if (d.ok) { snprintf(c->manual_file, sizeof c->manual_file, "%s", d.u.s); free(d.u.s); }
+    d = toml_string_in(t, "hook_file");
+    if (d.ok) { snprintf(c->hook_file, sizeof c->hook_file, "%s", d.u.s); free(d.u.s); }
     d = toml_string_in(t, "out_directory_path");
     if (d.ok) { snprintf(c->out_directory_path, sizeof c->out_directory_path, "%s", d.u.s); free(d.u.s); }
     d = toml_bool_in(t, "generate_exception_handlers");
