@@ -68,7 +68,7 @@ class FunctionNode {
   /// Precondition: canDiscover() returns true
   /// For non-imports: blocks must not be empty
   void discover(std::vector<Block> blocks,
-                std::vector<rex::codegen::ppc::Instruction*> instructions,
+                std::vector<rex::codegen::x86::Instruction*> instructions,
                 std::set<uint32_t> labels);
 
   /// Transition kRegistered -> kDiscovered for import functions (no blocks)
@@ -103,7 +103,7 @@ class FunctionNode {
   //=========================================================================
 
   /// Get owned instructions (pointers into DecodedBinary)
-  std::span<rex::codegen::ppc::Instruction* const> instructions() const { return instructions_; }
+  std::span<rex::codegen::x86::Instruction* const> instructions() const { return instructions_; }
 
   // Blocks
   const std::vector<Block>& blocks() const { return blocks_; }
@@ -191,7 +191,7 @@ class FunctionNode {
 
   // Populated at discover()
   std::vector<Block> blocks_;
-  std::vector<rex::codegen::ppc::Instruction*> instructions_;  // Pointers into DecodedBinary
+  std::vector<rex::codegen::x86::Instruction*> instructions_;  // Pointers into DecodedBinary
   std::set<uint32_t> labels_;  // Branch targets within this function
 
   std::vector<CallEdge> calls_;

@@ -26,10 +26,9 @@
 #include <vector>
 
 #include <rex/types.h>
+#include <rex/codegen/x86_instruction.h>
 
-namespace rex::codegen::ppc {
-struct Instruction;
-}  // namespace rex::codegen::ppc
+
 
 namespace rex::runtime {
 class ExportResolver;

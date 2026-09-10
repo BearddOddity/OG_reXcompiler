@@ -34,7 +34,7 @@ namespace rex::codegen {
 
 // Import PPC types
 using rex::codegen::ppc::decode_instruction;
-using rex::codegen::ppc::Instruction;
+using rex::codegen::x86::Instruction;
 using rex::codegen::ppc::Opcode;
 using rex::memory::load_and_swap;
 

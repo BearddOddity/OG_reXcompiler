@@ -16,3 +16,6 @@
 [submodule "tp_zydis"]
 	path = third_party/zydis
 	url = https://github.com/zyantific/zydis
+[submodule "tp_spdlog"]
+	path = third_party/spdlog
+	url = https://github.com/gabime/spdlog

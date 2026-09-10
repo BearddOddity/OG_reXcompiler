@@ -226,7 +226,7 @@ struct BlockDiscoveryResult {
   std::set<uint32_t> labels;
 
   // Collected instruction pointers (for FunctionNode ownership)
-  std::vector<rex::codegen::ppc::Instruction*> instructions;
+  std::vector<rex::codegen::x86::Instruction*> instructions;
 
   // External references found during discovery
   std::vector<uint32_t> externalCalls;  // bl to unknown targets

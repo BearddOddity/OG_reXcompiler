@@ -22,7 +22,7 @@
 
 namespace rex::codegen {
 
-using DecodedInsn = rex::codegen::ppc::Instruction;
+using DecodedInsn = rex::codegen::x86::Instruction;
 
 //=============================================================================
 // Instruction Range Iterator
