@@ -23,8 +23,9 @@ add_executable(ogxbox
   src/func_graph.c
   src/scanners.c
   src/func_scanner.c
-  # src/config.c
-  # src/phases.c
+  src/config.c
+  src/phases.c
+  src/context.c
   # src/emit_operand.c
   # src/emit.c
   # src/codegen_writer.c

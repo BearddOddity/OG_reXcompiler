@@ -44,7 +44,9 @@ typedef struct {
 } u32map;
 
 static inline void u32map_init(u32map* m, size_t cap0) {
-    m->cap = cap0 < 16 ? 16 : cap0;
+    size_t c = 16;
+    while (c < cap0) c <<= 1;          /* power of 2 — the probe masks require it */
+    m->cap = c;
     m->keys = calloc(m->cap, sizeof(uint32_t));
     m->vals = calloc(m->cap, sizeof(void*));
     m->used = calloc(m->cap, 1);

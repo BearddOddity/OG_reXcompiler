@@ -173,35 +173,85 @@ void fg_init(FunctionGraph* g) {
     memset(g, 0, sizeof *g);
     u32map_init(&g->functions, 4096);
     u32map_init(&g->has_xrefs, 4096);
+    u32map_init(&g->pending_unresolved, 256);
+    u32map_init(&g->unresolved_by_target, 1024);
 }
 
 void fg_free(FunctionGraph* g) {
     for (size_t i = 0; i < g->functions.cap; i++)
         if (g->functions.used[i]) fn_dispose(g->functions.vals[i]);
+    for (size_t i = 0; i < g->unresolved_by_target.cap; i++)
+        if (g->unresolved_by_target.used[i]) {
+            U32Vec* v = g->unresolved_by_target.vals[i];
+            vec_free(v); free(v);
+        }
     u32map_free(&g->functions);
     u32map_free(&g->has_xrefs);
+    u32map_free(&g->pending_unresolved);
+    u32map_free(&g->unresolved_by_target);
     vec_free(&g->sorted_bases);
     vec_free(&g->chunks);
 }
 
-static int cmp_u32(const void* a, const void* b) {
-    uint32_t x = *(const uint32_t*)a, y = *(const uint32_t*)b;
-    return x < y ? -1 : x > y ? 1 : 0;
+/* record that node `base` has an unresolved jump to `target` */
+static void fg_index_unresolved(FunctionGraph* g, uint32_t target, uint32_t base) {
+    void* v;
+    U32Vec* lst;
+    if (u32map_get(&g->unresolved_by_target, target, &v)) lst = v;
+    else { lst = calloc(1, sizeof *lst); u32map_put(&g->unresolved_by_target, target, lst); }
+    for (size_t i = 0; i < lst->len; i++) if (lst->data[i] == base) return;
+    vec_push(lst, base);
 }
-static void fg_resort(FunctionGraph* g) {
-    vec_clear(&g->sorted_bases);
-    for (size_t i = 0; i < g->functions.cap; i++)
-        if (g->functions.used[i]) vec_push(&g->sorted_bases, g->functions.keys[i]);
-    qsort(g->sorted_bases.data, g->sorted_bases.len, sizeof(uint32_t), cmp_u32);
-    g->sorted_dirty = 0;
+
+/* Keep pending_unresolved in sync with a node's unresolved-jump list. */
+static void fg_sync_unresolved(FunctionGraph* g, FunctionNode* n) {
+    if (n->state != ST_SEALED && n->unresolved_jumps.len > 0)
+        u32set_add(&g->pending_unresolved, n->base);
+    else
+        u32map_remove(&g->pending_unresolved, n->base);
+}
+
+/* sorted_bases is kept incrementally sorted: binary-search for the slot. */
+static size_t fg_lower_bound(FunctionGraph* g, uint32_t key) {
+    size_t lo = 0, hi = g->sorted_bases.len;
+    while (lo < hi) {
+        size_t mid = (lo + hi) / 2;
+        if (g->sorted_bases.data[mid] < key) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+static void fg_bases_insert(FunctionGraph* g, uint32_t key) {
+    size_t at = fg_lower_bound(g, key);
+    if (at < g->sorted_bases.len && g->sorted_bases.data[at] == key) return;
+    vec_push(&g->sorted_bases, 0);
+    memmove(&g->sorted_bases.data[at + 1], &g->sorted_bases.data[at],
+            (g->sorted_bases.len - 1 - at) * sizeof(uint32_t));
+    g->sorted_bases.data[at] = key;
+}
+static void fg_bases_remove(FunctionGraph* g, uint32_t key) {
+    size_t at = fg_lower_bound(g, key);
+    if (at >= g->sorted_bases.len || g->sorted_bases.data[at] != key) return;
+    memmove(&g->sorted_bases.data[at], &g->sorted_bases.data[at + 1],
+            (g->sorted_bases.len - 1 - at) * sizeof(uint32_t));
+    g->sorted_bases.len--;
 }
 
 static void fg_notify_added(FunctionGraph* g, FunctionNode* newf) {
-    for (size_t i = 0; i < g->functions.cap; i++) {
-        if (!g->functions.used[i]) continue;
-        FunctionNode* n = g->functions.vals[i];
-        if (n != newf && fn_is_pending(n)) fn_try_resolve_against(n, newf);
+    /* Only nodes with an unresolved jump to newf's entry are affected. */
+    void* v;
+    if (!u32map_get(&g->unresolved_by_target, newf->base, &v)) return;
+    U32Vec* lst = v;
+    U32Vec snap = {0};
+    for (size_t i = 0; i < lst->len; i++) vec_push(&snap, lst->data[i]);
+    for (size_t i = 0; i < snap.len; i++) {
+        FunctionNode* n = fg_get(g, snap.data[i]);
+        if (n && n != newf && fn_is_pending(n)) {
+            if (fn_try_resolve_against(n, newf)) fg_sync_unresolved(g, n);
+        }
     }
+    vec_free(&snap);
+    /* those jumps are gone now */
+    vec_clear(lst);
 }
 
 FunctionNode* fg_add_function(FunctionGraph* g, uint32_t base, uint32_t size,
@@ -218,7 +268,7 @@ FunctionNode* fg_add_function(FunctionGraph* g, uint32_t base, uint32_t size,
     if (name && name[0]) snprintf(n->name, sizeof n->name, "%s", name);
     u32map_put(&g->functions, base, n);
     u32map_put(&g->has_xrefs, base, (void*)(uintptr_t)(has_xrefs ? 1 : 0));
-    g->sorted_dirty = 1;
+    fg_bases_insert(g, base);
     fg_notify_added(g, n);
     return n;
 }
@@ -237,12 +287,11 @@ int fg_remove(FunctionGraph* g, uint32_t entry) {
     u32map_remove(&g->functions, entry);
     u32map_remove(&g->has_xrefs, entry);
     fn_dispose(v);
-    g->sorted_dirty = 1;
+    fg_bases_remove(g, entry);
     return 1;
 }
 
 FunctionNode* fg_get_containing(FunctionGraph* g, uint32_t addr) {
-    if (g->sorted_dirty) fg_resort(g);
     size_t lo = 0, hi = g->sorted_bases.len, found = (size_t)-1;
     while (lo < hi) {
         size_t mid = (lo + hi) / 2;
@@ -299,6 +348,8 @@ void fg_add_unresolved_jump_to(FunctionGraph* g, uint32_t entry, uint32_t site,
         return;
     }
     fn_add_unresolved(n, site, target, is_call, cond);
+    fg_index_unresolved(g, target, n->base);
+    fg_sync_unresolved(g, n);
 }
 
 int fg_try_resolve_function(FunctionGraph* g, uint32_t entry) {
@@ -329,6 +380,7 @@ int fg_try_resolve_function(FunctionGraph* g, uint32_t entry) {
         }
     }
     free(snap);
+    if (resolved) fg_sync_unresolved(g, n);
     return resolved;
 }
 

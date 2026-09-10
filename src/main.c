@@ -10,6 +10,9 @@
 #include "xbe.h"
 #include "binary_view.h"
 #include "decoded.h"
+#include "config.h"
+#include "context.h"
+#include "phases.h"
 
 static int usage(void) {
     fprintf(stderr, "usage: ogxbox <analyze|emit> <file.xbe> -o <dir> [--config f.toml] [--seed a,b,...]\n");
@@ -46,15 +49,38 @@ int main(int argc, char** argv) {
     DecodedBinary db;
     db_init(&db, &bv);
 
-    /* smoke: decode the entry instruction */
-    DecodedInsn di;
-    if (db_decode_at(&db, bv.entry_point, &di))
-        printf("entry insn: %s  (len %u, flow %d)\n", di.text, di.length, di.flow);
+    RecompilerConfig cfg;
+    config_init(&cfg);
+    if (config_path) {
+        if (config_load(&cfg, config_path) != 0) { fprintf(stderr, "config validation failed\n"); return 4; }
+        printf("config: %s\n", config_path);
+    }
+    if (seed_arg) {
+        for (char* s = strdup(seed_arg), *tok = strtok(s, ","); tok; tok = strtok(NULL, ","))
+            u32set_add(&cfg.seed_functions, parse_hex_u32(tok));
+    }
 
+    CodegenContext ctx;
+    ctx_init(&ctx, &bv, &db, &cfg);
+
+    int clean = analysis_pipeline_run(&ctx);
+
+    size_t total = fg_count(&ctx.graph), sealed = fg_sealed_count(&ctx.graph);
+    size_t pending = fg_pending_count(&ctx.graph), imports = 0;
+    for (size_t i = 0; i < ctx.graph.functions.cap; i++)
+        if (ctx.graph.functions.used[i] && fn_is_import(ctx.graph.functions.vals[i])) imports++;
+    printf("functions=%zu sealed=%zu pending=%zu imports=%zu\n", total, sealed, pending, imports);
+    printf("code-regions=%zu data-regions=%zu\n",
+           ctx.scan.code_regions.len, ctx.scan.data_regions.len);
+    printf("validation: %s (%zu errors)\n", clean ? "clean" : "FAILED", ctx.errors.items.len);
+
+    if (do_emit)
+        fprintf(stderr, "[ogxbox-c] emitter not yet ported.\n");
+
+    ctx_free(&ctx);
+    config_free(&cfg);
     db_free(&db);
     bv_free(&bv);
     xbe_free(&xbe);
-
-    fprintf(stderr, "\n[ogxbox-c] analysis/emit pipeline not yet ported — foundation only.\n");
-    return 0;
+    return clean ? 0 : 3;
 }

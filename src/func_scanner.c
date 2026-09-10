@@ -85,16 +85,20 @@ void fs_discover_blocks(FunctionScanner* fs, uint32_t entry_point,
     DiscCtx c = { entry_point, region->end, known_functions, &visited, &block_starts, &work, out };
 
     size_t qi = 0;
+    size_t guard = 0;
     while (qi < work.len && out->blocks.len < MAX_BLOCKS) {
+        if (++guard > 200000) break;    /* pathological — cap it */
         uint32_t block_start = work.data[qi++];
         if (u32map_has(&visited, block_start)) continue;
         if (!(block_start >= entry_point && block_start < c.func_end)) continue;
 
         uint32_t addr = block_start, block_size = 0;
+        size_t inner = 0;
         while (addr >= entry_point && addr < c.func_end) {
+            if (++inner > 2000000) { block_size = addr - block_start; break; }
             DecodedInsn insn;
             if (!db_decode_at(fs->db, addr, &insn) ||
-                insn.flow == FLOW_INVALID || insn.flow == FLOW_INT3) {
+                insn.flow == FLOW_INVALID || insn.flow == FLOW_INT3 || insn.length == 0) {
                 block_size = addr - block_start;
                 break;
             }

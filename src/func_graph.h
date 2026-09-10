@@ -50,6 +50,8 @@ typedef int (*MemoryReader)(void* ctx, uint32_t addr, uint32_t* out);
 typedef struct {
     u32map functions;        /* addr -> FunctionNode* */
     u32map has_xrefs;        /* addr -> (void*)1 */
+    u32map pending_unresolved; /* set: addrs of pending nodes with >=1 unresolved jump */
+    u32map unresolved_by_target; /* target addr -> U32Vec* of node bases with an unresolved jump there */
     U32Vec sorted_bases;   /* kept sorted for interval lookup */
     int sorted_dirty;
     BlockVec chunks;
